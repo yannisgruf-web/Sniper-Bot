@@ -1,0 +1,138 @@
+// src/index.js – verdrahtet alles:
+// PumpPortal (Sekunden) + GeckoTerminal (Minuten) -> Safety -> Push + Paper-Trade -> Stats
+const http = require("http");
+const cfg = require("./config");
+const { startPumpListener } = require("./pump-listener");
+const { startGeckoListener, poolPriceUsd } = require("./gecko-listener");
+const { checkPump, checkEvm } = require("./safety");
+const paper = require("./paper");
+const { notify } = require("./telegram");
+const { solUsd } = require("./sol-price");
+
+const boot = Date.now();
+const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+let pumpStatus = "startet…";
+
+// Realistischer Einstieg: Position erst beim ERSTEN echten Folge-Trade öffnen
+// (nicht zum Create-Kurs, den real niemand bekommt). Kein Trade in 2 Min -> verwerfen.
+const pendingEntry = new Map(); // mint -> { msg, check, link, ts }
+setInterval(() => {
+  const cut = Date.now() - 120e3;
+  for (const [mint, p] of pendingEntry) {
+    if (p.ts < cut) { pendingEntry.delete(mint); pump.unsubscribeTrades(mint); paper.stats.noEntry = (paper.stats.noEntry || 0) + 1; }
+  }
+}, 20e3);
+
+// ── Pump.fun-Pfad (Solana, sekundenschnell) ─────────────────────────────
+const pump = startPumpListener({
+  onStatus: s => { pumpStatus = s; log("PumpPortal:", s); },
+
+  async onNewToken(msg) {
+    paper.stats.signals++;
+    const check = await checkPump(msg);
+    if (!check.ok) return; // still verwerfen – 95% fliegen hier raus
+
+    const vSol = +msg.vSolInBondingCurve || 0, vTok = +msg.vTokensInBondingCurve || 0;
+    const priceSol = vTok > 0 ? vSol / vTok : null;
+    if (!priceSol) return;
+
+    const sol = await solUsd();
+    const mcapUsd = (+msg.marketCapSol || 0) * sol;
+    const link = `https://pump.fun/${msg.mint}`;
+    const flagTxt = check.flags?.length ? ` ⚠ ${check.flags.join(", ")}` : "";
+
+    log(`SIGNAL pump.fun: ${msg.symbol} | Dev-Buy ${check.devSol.toFixed(1)} SOL | MCap ~$${Math.round(mcapUsd / 1e3)}k${flagTxt}`);
+    notify(`🎯 <b>Fresh Launch: ${msg.symbol}</b>\npump.fun · Dev ${check.devSol.toFixed(1)} SOL · MCap ~$${Math.round(mcapUsd / 1e3)}k${flagTxt}\n${link}`).catch(() => {});
+
+    // Nicht zum Create-Kurs einsteigen – auf ersten echten Trade warten
+    pendingEntry.set(msg.mint, { symbol: msg.symbol || "?", link, ts: Date.now() });
+    pump.subscribeTrades(msg.mint);
+  },
+
+  onTokenTrade(msg) {
+    const vSol = +msg.vSolInBondingCurve || 0, vTok = +msg.vTokensInBondingCurve || 0;
+    const price = vTok > 0 ? vSol / vTok : null;
+    if (!price) return;
+    const pend = pendingEntry.get(msg.mint);
+    if (pend) {
+      pendingEntry.delete(msg.mint);
+      const pos = paper.openPosition({
+        id: msg.mint, symbol: pend.symbol, source: "pump.fun",
+        entryPrice: price, priceUnit: "SOL", link: pend.link
+      });
+      if (!pos) pump.unsubscribeTrades(msg.mint);
+      return;
+    }
+    paper.updatePrice(msg.mint, price, trade => {
+      pump.unsubscribeTrades(msg.mint);
+      notify(`${trade.pnlPct >= 0 ? "✅" : "❌"} <b>Paper ${trade.pnlPct >= 0 ? "+" : ""}${trade.pnlPct}%: ${trade.symbol}</b>\n${trade.reason} nach ${trade.holdMin} Min · fiktiv ${trade.pnlUsd >= 0 ? "+" : ""}$${trade.pnlUsd}${trade.link ? "\n" + trade.link : ""}`).catch(() => {});
+    });
+  }
+});
+
+// Sweep-Exits (Zeitlimit/illiquide) melden und Abos aufräumen
+paper.onSweepClose(trade => {
+  if (trade.source === "pump.fun") { try { pump.unsubscribeTrades(trade.linkMint || ""); } catch {} }
+  notify(`${trade.pnlPct >= 0 ? "✅" : "❌"} <b>Paper ${trade.pnlPct >= 0 ? "+" : ""}${trade.pnlPct}%: ${trade.symbol}</b>\n${trade.reason} nach ${trade.holdMin} Min · fiktiv ${trade.pnlUsd >= 0 ? "+" : ""}$${trade.pnlUsd}`).catch(() => {});
+});
+
+// ── GeckoTerminal-Pfad (EVM + Solana-DEX, Minuten-Latenz) ───────────────
+const gtOpen = new Map(); // id -> {network, poolAddr}
+startGeckoListener(async cand => {
+  paper.stats.signals++;
+  let check;
+  if (cand.network === "solana") {
+    check = { ok: true, flags: ["Solana-DEX: nur Basis-Check"] };
+  } else {
+    check = await checkEvm(cand.network, cand.address);
+    if (!check.ok) return;
+  }
+  const link = `https://dexscreener.com/${cand.network}/${cand.poolAddr || cand.address}`;
+  const lp = check.lpLockedPct != null ? ` · LP ${check.lpLockedPct.toFixed(0)}%` : "";
+  const flagTxt = check.flags?.length ? ` ⚠ ${check.flags.join(", ")}` : "";
+
+  log(`SIGNAL gecko/${cand.network}: ${cand.symbol} | ${cand.ageMin.toFixed(0)} Min alt | Liq $${Math.round(cand.liq / 1e3)}k${lp}${flagTxt}`);
+  notify(`🎯 <b>Neuer Pool: ${cand.symbol}</b>\n${cand.network.toUpperCase()} · ${cand.ageMin.toFixed(0)} Min alt · Liq $${Math.round(cand.liq / 1e3)}k${lp}${flagTxt}\n${link}`).catch(() => {});
+
+  if (cand.priceUsd && cand.poolAddr) {
+    const pos = paper.openPosition({
+      id: cand.network + ":" + cand.address, symbol: cand.symbol, source: "gecko",
+      network: cand.network, entryPrice: cand.priceUsd, priceUnit: "USD", link
+    });
+    if (pos) gtOpen.set(pos.id, { network: cand.network, poolAddr: cand.poolAddr });
+  }
+});
+
+// Preis-Polling für offene GT-Positionen
+setInterval(async () => {
+  for (const [id, ref] of gtOpen) {
+    if (!paper.open.has(id)) { gtOpen.delete(id); continue; }
+    const price = await poolPriceUsd(ref.network, ref.poolAddr);
+    if (price) paper.updatePrice(id, price, trade => {
+      gtOpen.delete(id);
+      notify(`${trade.pnlPct >= 0 ? "✅" : "❌"} <b>Paper ${trade.pnlPct >= 0 ? "+" : ""}${trade.pnlPct}%: ${trade.symbol}</b>\n${trade.reason} nach ${trade.holdMin} Min · fiktiv ${trade.pnlUsd >= 0 ? "+" : ""}$${trade.pnlUsd}${trade.link ? "\n" + trade.link : ""}`).catch(() => {});
+    });
+  }
+}, cfg.PRICE_POLL_SEC * 1000);
+
+// ── Stats-HTTP (Railway-URL, geschützt per ?t=STATS_TOKEN) ──────────────
+http.createServer(async (req, res) => {
+  const url = new URL(req.url, "http://x");
+  if (cfg.STATS_TOKEN && url.searchParams.get("t") !== cfg.STATS_TOKEN) {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ error: "unauthorized – ?t=STATS_TOKEN anhängen" }));
+  }
+  const s = paper.summary();
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify({
+    status: "läuft", pumpPortal: pumpStatus,
+    uptimeMin: +((Date.now() - boot) / 60e3).toFixed(0),
+    config: { tp: cfg.TAKE_PROFIT_PCT + "%", sl: cfg.STOP_LOSS_PCT + "%", zeitlimit: cfg.TIME_LIMIT_MIN + " Min", position: "$" + cfg.POSITION_USD },
+    ...s
+  }, null, 2));
+}).listen(cfg.PORT, () => log("Stats-Server auf Port", cfg.PORT));
+
+// Sauber beenden (Railway-Redeploys): offene Trades noch wegschreiben
+process.on("SIGTERM", async () => { await paper.flush(); process.exit(0); });
+
+log("KAS-Sniper-Bot gestartet. Paper-Trading aktiv – KEIN echtes Geld.");
