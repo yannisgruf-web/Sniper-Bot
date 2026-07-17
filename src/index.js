@@ -225,10 +225,9 @@ setInterval(async () => {
       const price = priceByPool[(x.addr || "").toLowerCase()];
       if (price) paper.updatePrice(x.id, price, async trade => {
         gtOpen.delete(x.id);
-        if (executor.hasLivePosition(x.id)) {
-          const puUsd = x.network === "solana" ? await solUsd() : await bnbUsd();
-          executor.closeReal(x.id, puUsd, trade.reason).catch(()=>{});
-        }
+        // Live-Exits macht AUSSCHLIESSLICH der Watchdog (Trailing, Anzeige-Messung,
+        // Rug-Handling). Der Paper-Spiegel fasst Live-Positionen nicht mehr an –
+        // über diesen Pfad lief der PTBL-Verkauf für 0,00$ mit falschem Label.
         if (cfg.NOTIFY_PAPER) notify(tradeExitMsg(trade)).catch(() => {});
       });
     }

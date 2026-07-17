@@ -78,6 +78,7 @@ module.exports = {
   TRAILING:          b(process.env.TRAILING, true),        // Trailing-Stop aktiv
   TRAIL_ARM_PCT:     n(process.env.TRAIL_ARM_PCT, 5),      // ab +5% ist Einstand gesichert
   TRAIL_STEP_PCT:    n(process.env.TRAIL_STEP_PCT, 5),     // Stop zieht in 5%-Schritten nach
+  WATCHDOG_SEC:      n(process.env.WATCHDOG_SEC, 10),       // Exit-Überwachung: eigener, schneller Takt
   DAILY_LOSS_LIMIT_USD: n(process.env.DAILY_LOSS_LIMIT_USD, 15), // dann Auto-Stopp bis Folgetag
   LIVE_CHAINS:       (process.env.LIVE_CHAINS || "solana,bsc").split(",").map(s=>s.trim()),
   PRIORITY_FEE_LAMPORTS: n(process.env.PRIORITY_FEE_LAMPORTS, 200000),

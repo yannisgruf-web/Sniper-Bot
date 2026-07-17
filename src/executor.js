@@ -226,7 +226,7 @@ async function watchdogTick() {
     } catch (e) { console.error("watchdog", p.symbol, e.message); }
   }
 }
-setInterval(() => { watchdogTick().catch(()=>{}); }, Math.max(cfg.PRICE_POLL_SEC, 10) * 1000);
+setInterval(() => { watchdogTick().catch(()=>{}); }, Math.max(cfg.WATCHDOG_SEC, 5) * 1000);
 
 // Beim Start: wiederhergestellte Positionen melden
 if (state.positions.size) {
