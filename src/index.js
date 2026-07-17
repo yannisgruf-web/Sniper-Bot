@@ -270,6 +270,38 @@ async function pollCommands() {
       else if (text === "/go") { risk.reset(); notify("✅ Live-Käufe wieder freigegeben.").catch(()=>{}); }
       else if (text === "/weiter") { const r = executor.resume(); notify(r.enabled ? `▶️ <b>Nächster Trade freigegeben</b>\nEin-Trade-Test neu scharf. Tages-PnL läuft weiter: ${r.pnlUsdToday>=0?"+":""}${r.pnlUsdToday}$ (Limit −$${cfg.DAILY_LOSS_LIMIT_USD})`
         : "⚠️ LIVE_TRADING ist in Railway auf false – /weiter wirkt erst, wenn es an ist.").catch(()=>{}); }
+      else if (text === "/aufraeumen" || text === "/aufraeumen ja") {
+        const cleanup = require("./cleanup");
+        if (text === "/aufraeumen") {
+          notify("🧹 Analysiere Token-Konten – dauert je nach Anzahl bis zu einer Minute...").catch(()=>{});
+          const su = await solUsd().catch(() => 160);
+          const p = await cleanup.plan(su);
+          if (p.error) { notify("⚠️ " + p.error).catch(()=>{}); }
+          else {
+            global.__cleanupPlan = { p, ts: Date.now() };
+            const beh = p.behalten.filter(b => b.wertUsd != null);
+            notify(`🧹 <b>Aufräum-Plan</b>\n` +
+              `Leere Konten schließen: ${p.leer.length}\n` +
+              `Wertlose Tokens verbrennen + schließen: ${p.verbrennen.length}\n` +
+              `Unangetastet (haben noch Wert): ${beh.length}${beh.length ? " – " + beh.map(b => b.wertUsd + "$").join(", ") : ""}\n` +
+              `Erwartete Miete zurück: ~${p.rentSol} SOL (≈ ${p.rentUsd}$)\n\n` +
+              `⚠️ Verbrennen ist ENDGÜLTIG. Ausführen mit: /aufraeumen ja (gilt 5 Min.)`).catch(()=>{});
+          }
+        } else {
+          const stored = global.__cleanupPlan;
+          if (!stored || Date.now() - stored.ts > 5 * 60e3) {
+            notify("⚠️ Kein gültiger Plan. Erst /aufraeumen ausführen (Plan gilt 5 Min.).").catch(()=>{});
+          } else {
+            global.__cleanupPlan = null;
+            notify("🧹 Führe aus...").catch(()=>{});
+            const r = await cleanup.execute(stored.p);
+            notify(r.error ? "⚠️ " + r.error :
+              `🧹 <b>Aufräumen fertig</b>\n${r.ok}/${r.gesamt} Konten verarbeitet\n` +
+              `Zurückgeholt: ${r.zurueckSol} SOL\n` +
+              (r.fehler.length ? `Fehler:\n${r.fehler.join("\n").slice(0, 500)}` : "Keine Fehler.")).catch(()=>{});
+          }
+        }
+      }
       else if (text === "/bilanz") {
         const gapLog = require("./gap-log");
         const b = gapLog.bilanz();
