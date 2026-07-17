@@ -2,6 +2,11 @@
 const n = (v, d) => (v != null && v !== "" && !isNaN(+v) ? +v : d);
 const b = (v, d) => (v == null || v === "" ? d : String(v).toLowerCase() === "true");
 
+// Positionsgrößen: BEIDE Env-Namen werden akzeptiert (POS_USD_* und POSITION_USD_*),
+// damit Tippvarianten in Railway nicht stillschweigend zum Default zurückfallen.
+const POS_SOL = n(process.env.POS_USD_SOLANA ?? process.env.POSITION_USD_SOLANA, 5);
+const POS_BSC = n(process.env.POS_USD_BSC ?? process.env.POSITION_USD_BSC, 10);
+
 module.exports = {
   // Paper-Trading
   POSITION_USD:      n(process.env.POSITION_USD, 50),      // fiktive Positionsgröße
@@ -47,8 +52,8 @@ module.exports = {
   LIVE_TRADING:      b(process.env.LIVE_TRADING, false),   // Hauptschalter: false = reines Paper
   DRY_RUN:           b(process.env.DRY_RUN, true),         // true = alles außer finalem Signieren
   ONE_TRADE_TEST:    b(process.env.ONE_TRADE_TEST, true),  // nach 1 echtem Trade automatisch stoppen
-  POS_USD_SOLANA:    n(process.env.POS_USD_SOLANA, 5),     // Positionsgröße Solana
-  POS_USD_BSC:       n(process.env.POS_USD_BSC, 10),       // Positionsgröße BSC
+  POS_USD_SOLANA:    POS_SOL,
+  POS_USD_BSC:       POS_BSC,
   ENTRY_SLIPPAGE_BPS:n(process.env.ENTRY_SLIPPAGE_BPS, 300),  // 3% Kauf-Toleranz
   EXIT_SLIPPAGE_BPS: n(process.env.EXIT_SLIPPAGE_BPS, 1500),  // 15% Verkauf-Toleranz (raus kommen!)
   DAILY_LOSS_STOP_USD:n(process.env.DAILY_LOSS_STOP_USD, 6),  // Tagesverlust-Limit -> Selbstabschaltung
@@ -59,8 +64,8 @@ module.exports = {
   // ── Live-Trading (Executor) ──
   SOLANA_ADDRESS:     process.env.SOLANA_ADDRESS || "",
   LIVE_TRADING:      b(process.env.LIVE_TRADING, false),   // Hauptschalter. false = reines Paper.
-  POS_USD_SOLANA:    n(process.env.POS_USD_SOLANA, 5),
-  POS_USD_BSC:       n(process.env.POS_USD_BSC, 10),
+  POS_USD_SOLANA:    POS_SOL,
+  POS_USD_BSC:       POS_BSC,
   MAX_SLOTS_SOLANA:  n(process.env.MAX_SLOTS_SOLANA, 8),
   MAX_SLOTS_BSC:     n(process.env.MAX_SLOTS_BSC, 3),
   BUY_SLIPPAGE_BPS:  n(process.env.BUY_SLIPPAGE_BPS, 800),   // 8% Kauf-Toleranz
@@ -91,8 +96,8 @@ module.exports = {
   LIVE_TRADING:      b(process.env.LIVE_TRADING, false),   // Hauptschalter: false = nur Paper
   SOLANA_PRIVATE_KEY:process.env.SOLANA_PRIVATE_KEY || "",
   BSC_PRIVATE_KEY:   process.env.BSC_PRIVATE_KEY || "",
-  POSITION_USD_SOLANA:n(process.env.POSITION_USD_SOLANA, 5),
-  POSITION_USD_BSC:  n(process.env.POSITION_USD_BSC, 10),
+  POSITION_USD_SOLANA: POS_SOL,
+  POSITION_USD_BSC:  POS_BSC,
   MAX_DAILY_LOSS_USD:n(process.env.MAX_DAILY_LOSS_USD, 15), // Tagesverlust-Limit -> Selbstabschaltung
   BUY_SLIPPAGE_BPS:  n(process.env.BUY_SLIPPAGE_BPS, 800),  // 800 = 8% max. Kauf-Slippage
   SELL_SLIPPAGE_BPS: n(process.env.SELL_SLIPPAGE_BPS, 1500),// 1500 = 15% beim Verkauf (raus wollen)
