@@ -7,6 +7,7 @@ const bscX = require("./exec-bsc");
 const { notifyLive } = require("./telegram");
 const liveStore = require("./live-store");
 const tp = require("./token-price");
+const gapLog = require("./gap-log");
 const { solUsd, bnbUsd } = require("./prices");
 
 const state = {
@@ -84,7 +85,7 @@ function checkDailyLimit() {
     halt(`Tagesverlust-Limit (${state.pnlUsdToday.toFixed(2)}$)`);
 }
 
-async function closeReal(id, priceUnitUsd, reason) {
+async function closeReal(id, priceUnitUsd, reason, anzeigePnlPct = null) {
   const p = state.positions.get(id);
   if (!p) return { skipped: "keine Live-Position" };
   // Verkauf läuft auch ohne Kurs (Menge ist bekannt) – Kurs nur für die PnL-Anzeige.
@@ -126,8 +127,22 @@ async function closeReal(id, priceUnitUsd, reason) {
   state.positions.delete(id);
   persist();
   checkDailyLimit();
+  // ── Lücken-Messung: Anzeige-PnL (DexScreener/Paper-Sicht) vs. realisierter PnL.
+  const realPnlPct = p.entryUsd > 0 ? (pnl / p.entryUsd) * 100 : null;
+  let grundText = reason, gapText = "";
+  if (anzeigePnlPct != null && realPnlPct != null) {
+    const gap = anzeigePnlPct - realPnlPct;
+    gapLog.add({ symbol: p.symbol, chain: p.chain, reason,
+                 anzeigePnlPct: +anzeigePnlPct.toFixed(1), realPnlPct: +realPnlPct.toFixed(1),
+                 gapPp: +gap.toFixed(1), sizeUsd: p.entryUsd, erloesUsd: +res.usdOut.toFixed(2),
+                 haltedauerMin: p.openedAt ? +((Date.now() - p.openedAt) / 60e3).toFixed(1) : null });
+    const s = gapLog.stats();
+    grundText = `${reason} ausgelöst bei ${anzeigePnlPct >= 0 ? "+" : ""}${anzeigePnlPct.toFixed(0)}% (Anzeige)`;
+    gapText = `\nRealisiert ${realPnlPct >= 0 ? "+" : ""}${realPnlPct.toFixed(0)}% · Lücke ${(anzeigePnlPct - realPnlPct).toFixed(0)}pp` +
+              (s.n > 1 ? ` · Ø Lücke bisher ${s.avgGapPp}pp (${s.n} Trades)` : "");
+  }
   const versuchInfo = res.attempt > 1 ? `\n(brauchte ${res.attempt} Versuche, Slippage ${res.slippageBps / 100}%)` : "";
-  notifyLive(`${pnl >= 0 ? "✅" : "❌"} <b>LIVE Verkauf ${p.symbol}</b>\nErlös ${res.usdOut.toFixed(2)}$ · PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ · ${reason}${versuchInfo}\nTag: ${state.pnlUsdToday >= 0 ? "+" : ""}${state.pnlUsdToday.toFixed(2)}$`).catch(() => {});
+  notifyLive(`${pnl >= 0 ? "✅" : "❌"} <b>LIVE Verkauf ${p.symbol}</b>\nErlös ${res.usdOut.toFixed(2)}$ · PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ · ${grundText}${gapText}${versuchInfo}\nTag: ${state.pnlUsdToday >= 0 ? "+" : ""}${state.pnlUsdToday.toFixed(2)}$`).catch(() => {});
   return { ok: true, pnl };
 }
 
@@ -150,7 +165,7 @@ async function watchdogTick() {
     try {
       const now = await tp.tokenPriceUsd(p.chain, p.tokenAddr);
       const ageMin = p.openedAt ? (Date.now() - p.openedAt) / 60e3 : 999;
-      let grund = null;
+      let grund = null, anzeigePnl = null;
       if (now && p.entryPriceUsd) {
         const pnl = (now - p.entryPriceUsd) / p.entryPriceUsd * 100;
         // Plausibilitätsprüfung: >2000% ist kein echter Kursgewinn, sondern ein Einheiten-/Datenfehler.
@@ -162,13 +177,16 @@ async function watchdogTick() {
             notifyLive(`⚠️ ${p.symbol}: Einstiegspreis war fehlerhaft, wurde korrigiert. Position bleibt offen.`).catch(()=>{});
           }
         }
-        else if (pnl >= cfg.TAKE_PROFIT_PCT) grund = `take-profit (${pnl.toFixed(0)}%)`;
-        else if (pnl <= cfg.STOP_LOSS_PCT) grund = `stop-loss (${pnl.toFixed(0)}%)`;
+        else if (pnl >= cfg.TAKE_PROFIT_PCT) { grund = "take-profit"; anzeigePnl = pnl; }
+        else if (pnl <= cfg.STOP_LOSS_PCT)   { grund = "stop-loss";   anzeigePnl = pnl; }
       }
-      if (!grund && ageMin >= cfg.TIME_LIMIT_MIN) grund = "zeitlimit";
+      if (!grund && ageMin >= cfg.TIME_LIMIT_MIN) {
+        grund = "zeitlimit";
+        if (now && p.entryPriceUsd) anzeigePnl = (now - p.entryPriceUsd) / p.entryPriceUsd * 100;
+      }
       if (grund) {
         const unit = p.chain === "solana" ? await solUsd() : await bnbUsd();
-        await closeReal(id, unit, grund);
+        await closeReal(id, unit, grund, anzeigePnl);
       }
     } catch (e) { console.error("watchdog", p.symbol, e.message); }
   }
