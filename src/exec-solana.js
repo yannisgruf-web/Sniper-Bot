@@ -41,8 +41,11 @@ async function solBalanceUsd(solUsd) {
 const JUP_BASE = process.env.JUP_API_KEY ? "https://api.jup.ag" : "https://lite-api.jup.ag";
 const JUP_HEADERS = process.env.JUP_API_KEY ? { "x-api-key": process.env.JUP_API_KEY } : {};
 
-async function jupQuote(inputMint, outputMint, amount, slippageBps) {
-  const url = `${JUP_BASE}/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}&onlyDirectRoutes=false`;
+async function jupQuote(inputMint, outputMint, amount, slippageBps, opts = {}) {
+  // maxAccounts hält die Transaktion klein (Solana-Limit 1232 Bytes – "too large"-Fehler),
+  // restrictIntermediateTokens vermeidet exotische Mehrsprung-Routen über instabile Pools.
+  const direct = opts.direct ? "true" : "false";
+  const url = `${JUP_BASE}/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}&onlyDirectRoutes=${direct}&maxAccounts=${opts.maxAccounts || 40}&restrictIntermediateTokens=true`;
   const r = await fetch(url, { headers: JUP_HEADERS });
   if (!r.ok) {
     // Begründung aus dem Body mitnehmen (z.B. "could not find any route" = Liquidität weg)
@@ -144,9 +147,12 @@ async function buy(tokenMint, usdAmount, solUsd) {
   const solAmount = usdAmount / solUsd;
   const lamports = Math.floor(solAmount * 1e9);
   let schritt = "start";
+  const kaufFehler = [];
+  for (let versuch = 0; versuch < 2; versuch++) {
   try {
     schritt = "quote";
-    const quote = await jupQuote(SOL_MINT, tokenMint, lamports, cfg.BUY_SLIPPAGE_BPS);
+    // Versuch 1: kompakte Route · Versuch 2: frische Quote, NUR Direktroute
+    const quote = await jupQuote(SOL_MINT, tokenMint, lamports, cfg.BUY_SLIPPAGE_BPS, { direct: versuch > 0 });
     const rawOut = +quote.outAmount;                 // ROHE Einheiten!
     schritt = "sell-gate";
     if (cfg.SELL_GATE) {
@@ -165,9 +171,12 @@ async function buy(tokenMint, usdAmount, solUsd) {
     const sig = await sendSigned(swapTx);
     return { ok: true, sig, tokens: rawOut, priceUsd, decimals: dec, roundtripLossPct: roundtrip };
   } catch (e) {
-    console.error(`[SOLANA BUY FEHLER] Schritt "${schritt}" | Token ${tokenMint} |`, e.stack || e.message);
-    return { ok: false, error: `[${schritt}] ${e.message}` };
+    kaufFehler.push(`V${versuch + 1} [${schritt}]: ${e.message}`);
+    console.error(`[SOLANA BUY FEHLER] Versuch ${versuch + 1} Schritt "${schritt}" | Token ${tokenMint} |`, e.stack || e.message);
+    if (versuch === 0) await new Promise(r => setTimeout(r, 1200)); // kurz warten, dann Direktroute
   }
+  }
+  return { ok: false, error: kaufFehler.join(" | ") };
 }
 
 // Tatsächlichen Token-Bestand der Wallet lesen (rohe Einheiten, als BigInt).
@@ -220,7 +229,7 @@ async function sell(tokenMint, tokenAmount, solUsd) {
     const slip = Math.min(cfg.SELL_SLIPPAGE_BPS + i * 1000, 5000);
     try {
       schritt = "quote";
-      const quote = await jupQuote(tokenMint, SOL_MINT, amount, slip);
+      const quote = await jupQuote(tokenMint, SOL_MINT, amount, slip, { direct: i >= 2 });
       const outLamports = +quote.outAmount;
       const usdQuote = (outLamports / 1e9) * solUsd;
       if ((!cfg.LIVE_TRADING)) return { ok: true, dryRun: true, usdOut: usdQuote };
