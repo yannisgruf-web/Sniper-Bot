@@ -76,8 +76,12 @@ async function jupSwapTx(quote) {
 async function sendSigned(swapTxB64) {
   const tx = VersionedTransaction.deserialize(Buffer.from(swapTxB64, "base64"));
   tx.sign([wallet]);
+  const bh = await conn.getLatestBlockhash("confirmed");
   const sig = await conn.sendRawTransaction(tx.serialize(), { maxRetries: 3, skipPreflight: false });
-  const conf = await conn.confirmTransaction(sig, "confirmed");
+  // Moderne Strategie: wartet bis zur Bestätigung ODER bis der Blockhash abläuft
+  // (dann ist die Tx sicher NICHT gelandet und der Fehler ist ehrlich).
+  const conf = await conn.confirmTransaction(
+    { signature: sig, blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight }, "confirmed");
   if (conf.value?.err) throw new Error("Tx fehlgeschlagen: " + JSON.stringify(conf.value.err));
   return sig;
 }
@@ -207,19 +211,33 @@ async function sell(tokenMint, tokenAmount, solUsd) {
   }
   const tries = Math.max(1, cfg.SELL_RETRIES || 3);
   const errors = [];
+  // Saldo VOR dem Verkauf merken: der gemeldete Erlös ist ab jetzt der ECHTE
+  // Zuwachs im Wallet (inkl. Gebühren), nicht die Quote-Schätzung. Quote-Werte
+  // haben heute Gewinne gemeldet, die nie angekommen sind.
+  let preLamports = null;
+  try { preLamports = await conn.getBalance(wallet.publicKey, "confirmed"); } catch {}
   for (let i = 0; i < tries; i++) {
     const slip = Math.min(cfg.SELL_SLIPPAGE_BPS + i * 1000, 5000);
     try {
       schritt = "quote";
       const quote = await jupQuote(tokenMint, SOL_MINT, amount, slip);
       const outLamports = +quote.outAmount;
-      const usdOut = (outLamports / 1e9) * solUsd;
-      if ((!cfg.LIVE_TRADING)) return { ok: true, dryRun: true, usdOut };
+      const usdQuote = (outLamports / 1e9) * solUsd;
+      if ((!cfg.LIVE_TRADING)) return { ok: true, dryRun: true, usdOut: usdQuote };
       schritt = "swap-tx bauen";
       const swapTx = await jupSwapTx(quote);
       schritt = "signieren+senden";
       const sig = await sendSigned(swapTx);
-      return { ok: true, sig, usdOut, attempt: i + 1, slippageBps: slip };
+      // Echten Erlös messen: Saldo nach bestätigter Tx minus Saldo davor.
+      let usdOut = usdQuote, gemessen = false;
+      try {
+        if (preLamports != null) {
+          const post = await conn.getBalance(wallet.publicKey, "confirmed");
+          const diff = post - preLamports;
+          if (diff > 0) { usdOut = (diff / 1e9) * solUsd; gemessen = true; }
+        }
+      } catch {}
+      return { ok: true, sig, usdOut, usdQuote, gemessen, attempt: i + 1, slippageBps: slip };
     } catch (e) {
       const logs = await txLogs(e);
       const tail = logs ? " | " + logs.slice(-3).join(" · ").slice(0, 300) : "";

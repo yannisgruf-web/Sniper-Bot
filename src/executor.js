@@ -10,14 +10,27 @@ const tp = require("./token-price");
 const gapLog = require("./gap-log");
 const { solUsd, bnbUsd } = require("./prices");
 
+// Gespeicherten Zustand laden. WICHTIG: Tageszähler und Halt-Status überleben
+// Neustarts – sonst hebelt jeder Absturz den Ein-Trade-Test aus (ist heute passiert).
+// Unterscheidung: ändert sich die Railway-Deployment-ID, war es ein BEWUSSTES
+// Deploy (neuer Code) -> Zähler zurücksetzen. Gleiche ID = Absturz -> Zustand behalten.
+const _stored = liveStore.load();
+const _meta = _stored.__meta || {};
+delete _stored.__meta;
+const _today = new Date().toISOString().slice(0, 10);
+const _deployId = process.env.RAILWAY_DEPLOYMENT_ID || "lokal";
+const _sameRun = _meta.dayStamp === _today && _meta.deployId === _deployId;
 const state = {
-  enabled: cfg.LIVE_TRADING,
-  realTradesToday: 0,
-  pnlUsdToday: 0,
-  dayStamp: new Date().toISOString().slice(0, 10),
-  positions: new Map(Object.entries(liveStore.load())),  // überlebt Neustarts
-  haltReason: null
+  enabled: cfg.LIVE_TRADING && !(_sameRun && _meta.haltReason),
+  realTradesToday: _sameRun ? (_meta.realTradesToday || 0) : 0,
+  pnlUsdToday: _meta.dayStamp === _today ? (_meta.pnlUsdToday || 0) : 0, // PnL zählt IMMER für den Tag, auch über Deploys
+  dayStamp: _today,
+  positions: new Map(Object.entries(_stored)),  // überlebt Neustarts
+  haltReason: _sameRun ? (_meta.haltReason || null) : null
 };
+// Sperre gegen gleichzeitige Verkäufe derselben Position (Watchdog + Paper-Spiegel
+// haben heute bei CARDCAT zeitgleich verkauft -> Doppel-Meldungen, Phantom-Erlös).
+const closing = new Set();
 
 function rollDay() {
   const today = new Date().toISOString().slice(0, 10);
@@ -88,6 +101,9 @@ function checkDailyLimit() {
 async function closeReal(id, priceUnitUsd, reason, anzeigePnlPct = null) {
   const p = state.positions.get(id);
   if (!p) return { skipped: "keine Live-Position" };
+  if (closing.has(id)) return { skipped: "Verkauf läuft bereits" };
+  closing.add(id);
+  try {
   // Verkauf läuft auch ohne Kurs (Menge ist bekannt) – Kurs nur für die PnL-Anzeige.
   const res = p.chain === "solana"
     ? await solX.sell(p.tokenAddr, p.tokens, priceUnitUsd)
@@ -144,6 +160,7 @@ async function closeReal(id, priceUnitUsd, reason, anzeigePnlPct = null) {
   const versuchInfo = res.attempt > 1 ? `\n(brauchte ${res.attempt} Versuche, Slippage ${res.slippageBps / 100}%)` : "";
   notifyLive(`${pnl >= 0 ? "✅" : "❌"} <b>LIVE Verkauf ${p.symbol}</b>\nErlös ${res.usdOut.toFixed(2)}$ · PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ · ${grundText}${gapText}${versuchInfo}\nTag: ${state.pnlUsdToday >= 0 ? "+" : ""}${state.pnlUsdToday.toFixed(2)}$`).catch(() => {});
   return { ok: true, pnl };
+  } finally { closing.delete(id); }
 }
 
 function summary() {
@@ -155,7 +172,11 @@ function summary() {
     solAddress: solX.address(), bscAddress: bscX.address()
   };
 }
-function persist() { liveStore.save(Object.fromEntries(state.positions)); }
+function persist() {
+  liveStore.save({ ...Object.fromEntries(state.positions),
+    __meta: { dayStamp: state.dayStamp, deployId: _deployId, realTradesToday: state.realTradesToday,
+              pnlUsdToday: state.pnlUsdToday, haltReason: state.haltReason } });
+}
 
 // ── Live-Watchdog: überwacht offene ECHTE Positionen unabhängig von der Paper-Engine.
 // Nötig, weil nach einem Neustart die Paper-Engine leer ist und sonst niemand verkaufen würde.
@@ -179,6 +200,16 @@ async function watchdogTick() {
         }
         else if (pnl >= cfg.TAKE_PROFIT_PCT) { grund = "take-profit"; anzeigePnl = pnl; }
         else if (pnl <= cfg.STOP_LOSS_PCT)   { grund = "stop-loss";   anzeigePnl = pnl; }
+        // ── Trailing-Stop: Hochwasserstand merken; ab +TRAIL_ARM_PCT ist der Stop
+        // auf Einstand (0%) gesichert und zieht je TRAIL_STEP_PCT eine Stufe nach.
+        // Beispiel (5/5): Peak +7% -> Stop 0% · Peak +12% -> Stop +5% · Peak +23% -> Stop +15%.
+        if (!grund && cfg.TRAILING) {
+          if (p.peakPnl == null || pnl > p.peakPnl) { p.peakPnl = +pnl.toFixed(1); persist(); }
+          if (p.peakPnl >= cfg.TRAIL_ARM_PCT) {
+            const stufe = Math.floor(p.peakPnl / cfg.TRAIL_STEP_PCT) * cfg.TRAIL_STEP_PCT - cfg.TRAIL_STEP_PCT;
+            if (pnl <= stufe) { grund = `trailing-stop (Stop ${stufe >= 0 ? "+" : ""}${stufe}%, Peak +${p.peakPnl}%)`; anzeigePnl = pnl; }
+          }
+        }
       }
       if (!grund && ageMin >= cfg.TIME_LIMIT_MIN) {
         grund = "zeitlimit";
@@ -203,4 +234,14 @@ if (state.positions.size) {
 function stopCommand() { halt("/stop per Telegram"); }
 function hasLivePosition(id) { return state.positions.has(id); }
 
-module.exports = { openReal, closeReal, summary, stopCommand, hasLivePosition, state, watchdogTick };
+// Ein-Trade-Test per Telegram neu scharfmachen – ersetzt den Redeploy-Workflow.
+function resume() {
+  rollDay();
+  state.realTradesToday = 0;
+  state.haltReason = null;
+  state.enabled = cfg.LIVE_TRADING;
+  persist();
+  return { enabled: state.enabled, pnlUsdToday: +state.pnlUsdToday.toFixed(2) };
+}
+
+module.exports = { openReal, closeReal, summary, stopCommand, hasLivePosition, state, watchdogTick, resume };

@@ -255,7 +255,7 @@ http.createServer(async (req, res) => {
   }, null, 2));
 }).listen(cfg.PORT, () => log("Stats-Server auf Port", cfg.PORT));
 
-// ── Telegram-Befehle: /stop (Not-Aus), /go (wieder frei), /status ──
+// ── Telegram-Befehle: /stop (Not-Aus), /go (wieder frei), /weiter (nächster Ein-Trade), /status ──
 let tgOffset = 0;
 async function pollCommands() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -268,6 +268,8 @@ async function pollCommands() {
       const text = (u.message?.text || "").trim().toLowerCase();
       if (text === "/stop") { risk.kill("manuell"); notify("🛑 <b>NOT-AUS aktiv</b>\nKeine neuen Live-Käufe mehr. Offene Positionen werden weiter regulär verkauft. Mit /go wieder freigeben.").catch(()=>{}); }
       else if (text === "/go") { risk.reset(); notify("✅ Live-Käufe wieder freigegeben.").catch(()=>{}); }
+      else if (text === "/weiter") { const r = executor.resume(); notify(r.enabled ? `▶️ <b>Nächster Trade freigegeben</b>\nEin-Trade-Test neu scharf. Tages-PnL läuft weiter: ${r.pnlUsdToday>=0?"+":""}${r.pnlUsdToday}$ (Limit −$${cfg.DAILY_LOSS_LIMIT_USD})`
+        : "⚠️ LIVE_TRADING ist in Railway auf false – /weiter wirkt erst, wenn es an ist.").catch(()=>{}); }
       else if (text === "/status") { const s = executor.summary(); notify(`📊 Live: ${s.live?"AN":"aus"}${s.dryRun?" (dry-run)":""} · offen ${s.openLive}\nChains: ${s.chains.join(", ")}\nTrades heute: ${s.realTradesToday} · PnL heute ${s.pnlUsdToday>=0?"+":""}$${s.pnlUsdToday} (Limit −$${s.dailyLossStop})\n${s.haltReason?"⛔ Gestoppt: "+s.haltReason:"✅ aktiv"}\nSOL: <code>${s.solAddress||"—"}</code>\nBSC: <code>${s.bscAddress||"—"}</code>`).catch(()=>{}); }
     }
   } catch {}

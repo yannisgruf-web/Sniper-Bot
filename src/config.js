@@ -75,6 +75,9 @@ module.exports = {
   SELL_GATE:         b(process.env.SELL_GATE, true),        // Verkäuflichkeits-Prüfung VOR jedem echten Kauf (Solana)
   MAX_ROUNDTRIP_LOSS_PCT: n(process.env.MAX_ROUNDTRIP_LOSS_PCT, 30), // sofortiger Kauf+Verkauf dürfte max. 30% kosten
   BLOCK_MINT_AUTHORITY: b(process.env.BLOCK_MINT_AUTHORITY, true),   // Tokens mit aktiver Mint-Authority ablehnen
+  TRAILING:          b(process.env.TRAILING, true),        // Trailing-Stop aktiv
+  TRAIL_ARM_PCT:     n(process.env.TRAIL_ARM_PCT, 5),      // ab +5% ist Einstand gesichert
+  TRAIL_STEP_PCT:    n(process.env.TRAIL_STEP_PCT, 5),     // Stop zieht in 5%-Schritten nach
   DAILY_LOSS_LIMIT_USD: n(process.env.DAILY_LOSS_LIMIT_USD, 15), // dann Auto-Stopp bis Folgetag
   LIVE_CHAINS:       (process.env.LIVE_CHAINS || "solana,bsc").split(",").map(s=>s.trim()),
   PRIORITY_FEE_LAMPORTS: n(process.env.PRIORITY_FEE_LAMPORTS, 200000),
