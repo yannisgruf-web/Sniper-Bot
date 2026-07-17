@@ -126,6 +126,10 @@ async function closeReal(id, priceUnitUsd, reason, anzeigePnlPct = null) {
       state.pnlUsdToday += pnl;
       state.positions.delete(id);
       persist();
+      gapLog.add({ symbol: p.symbol, chain: p.chain, reason: "rug", rug: true,
+                   anzeigePnlPct: null, realPnlPct: -100, gapPp: null,
+                   sizeUsd: p.entryUsd, erloesUsd: 0,
+                   haltedauerMin: p.openedAt ? +((Date.now() - p.openedAt) / 60e3).toFixed(1) : null });
       notifyLive(`💀 <b>${p.symbol}: unverkäuflich (Rug/Honeypot)</b>\n${p.sellFails}× Verkauf gescheitert (je ${cfg.SELL_RETRIES} interne Versuche) – Position wird als Totalverlust (−${p.entryUsd.toFixed(2)}$) geschlossen.\nLetzter Fehler: ${String(res.error || "").slice(0, 500)}\nTag: ${state.pnlUsdToday >= 0 ? "+" : ""}${state.pnlUsdToday.toFixed(2)}$`).catch(() => {});
       checkDailyLimit();
       return { closed: "rug", pnl };

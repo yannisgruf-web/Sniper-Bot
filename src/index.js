@@ -255,7 +255,7 @@ http.createServer(async (req, res) => {
   }, null, 2));
 }).listen(cfg.PORT, () => log("Stats-Server auf Port", cfg.PORT));
 
-// ── Telegram-Befehle: /stop (Not-Aus), /go (wieder frei), /weiter (nächster Ein-Trade), /status ──
+// ── Telegram-Befehle: /stop (Not-Aus), /go (wieder frei), /weiter (nächster Ein-Trade), /bilanz (Gap-Log-Auswertung), /status ──
 let tgOffset = 0;
 async function pollCommands() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -270,6 +270,20 @@ async function pollCommands() {
       else if (text === "/go") { risk.reset(); notify("✅ Live-Käufe wieder freigegeben.").catch(()=>{}); }
       else if (text === "/weiter") { const r = executor.resume(); notify(r.enabled ? `▶️ <b>Nächster Trade freigegeben</b>\nEin-Trade-Test neu scharf. Tages-PnL läuft weiter: ${r.pnlUsdToday>=0?"+":""}${r.pnlUsdToday}$ (Limit −$${cfg.DAILY_LOSS_LIMIT_USD})`
         : "⚠️ LIVE_TRADING ist in Railway auf false – /weiter wirkt erst, wenn es an ist.").catch(()=>{}); }
+      else if (text === "/bilanz") {
+        const gapLog = require("./gap-log");
+        const b = gapLog.bilanz();
+        if (!b.n) { notify("📊 Noch keine abgeschlossenen Live-Trades im Log.").catch(()=>{}); }
+        else {
+          notify(`📊 <b>Bilanz (${b.n} Trades)</b>\n` +
+            `Rugs: ${b.rugs} (${b.rugRatePct}%)\n` +
+            `Ø Ausführungslücke: ${b.avgGapPp != null ? b.avgGapPp + "pp" : "n/a"}\n` +
+            `Gesamt-PnL: ${b.totalPnlUsd >= 0 ? "+" : ""}${b.totalPnlUsd}$ (Einsatz gesamt ${b.totalSizeUsd}$)\n` +
+            (b.best ? `Bester: ${b.best.symbol} (${b.best.pnl >= 0 ? "+" : ""}${b.best.pnl}$)\n` : "") +
+            (b.worst ? `Schlechtester: ${b.worst.symbol} (${b.worst.pnl >= 0 ? "+" : ""}${b.worst.pnl}$)` : "")
+          ).catch(()=>{});
+        }
+      }
       else if (text === "/status") { const s = executor.summary(); notify(`📊 Live: ${s.live?"AN":"aus"}${s.dryRun?" (dry-run)":""} · offen ${s.openLive}\nChains: ${s.chains.join(", ")}\nTrades heute: ${s.realTradesToday} · PnL heute ${s.pnlUsdToday>=0?"+":""}$${s.pnlUsdToday} (Limit −$${s.dailyLossStop})\n${s.haltReason?"⛔ Gestoppt: "+s.haltReason:"✅ aktiv"}\nSOL: <code>${s.solAddress||"—"}</code>\nBSC: <code>${s.bscAddress||"—"}</code>`).catch(()=>{}); }
     }
   } catch {}

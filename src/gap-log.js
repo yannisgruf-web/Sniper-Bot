@@ -37,4 +37,28 @@ function stats() {
   return { n: arr.length, avgGapPp: +avg.toFixed(1), medianGapPp: +median.toFixed(1) };
 }
 
-module.exports = { add, stats, load };
+// Vollständige Bilanz: ALLE Abschlüsse (normale Verkäufe + Rugs), für /bilanz.
+function bilanz() {
+  const all = load();
+  if (!all.length) return { n: 0 };
+  const rugs = all.filter(e => e.rug);
+  const normal = all.filter(e => !e.rug);
+  const gaps = normal.filter(e => e.gapPp != null);
+  const pnlUsd = e => (e.erloesUsd || 0) - (e.sizeUsd || 0);
+  const totalPnl = all.reduce((s, e) => s + pnlUsd(e), 0);
+  const sortedByPnl = [...normal].sort((a, b) => pnlUsd(b) - pnlUsd(a));
+  const best = sortedByPnl[0], worst = sortedByPnl[sortedByPnl.length - 1];
+  const avgGap = gaps.length ? gaps.reduce((s, e) => s + e.gapPp, 0) / gaps.length : null;
+  return {
+    n: all.length,
+    rugs: rugs.length,
+    rugRatePct: +(rugs.length / all.length * 100).toFixed(0),
+    totalPnlUsd: +totalPnl.toFixed(2),
+    avgGapPp: avgGap != null ? +avgGap.toFixed(1) : null,
+    best: best ? { symbol: best.symbol, pnl: +pnlUsd(best).toFixed(2) } : null,
+    worst: worst ? { symbol: worst.symbol, pnl: +pnlUsd(worst).toFixed(2) } : null,
+    totalSizeUsd: +all.reduce((s, e) => s + (e.sizeUsd || 0), 0).toFixed(2),
+  };
+}
+
+module.exports = { add, stats, bilanz, load };
