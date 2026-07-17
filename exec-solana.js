@@ -90,18 +90,25 @@ async function buy(tokenMint, usdAmount, solUsd) {
   if (!init()) return { ok: false, error: "keine Wallet" };
   const solAmount = usdAmount / solUsd;
   const lamports = Math.floor(solAmount * 1e9);
+  let schritt = "start";
   try {
+    schritt = "quote";
     const quote = await jupQuote(SOL_MINT, tokenMint, lamports, cfg.BUY_SLIPPAGE_BPS);
     const rawOut = +quote.outAmount;                 // ROHE Einheiten!
+    schritt = "decimals";
     const dec = await mintDecimals(tokenMint);
-    // Preis pro ganzem Token = USD / (rohe Menge / 10^decimals). Ohne decimals kein Preis melden.
     const humanOut = dec != null ? rawOut / Math.pow(10, dec) : null;
     const priceUsd = humanOut > 0 ? usdAmount / humanOut : null;
     if ((!cfg.LIVE_TRADING)) return { ok: true, dryRun: true, tokens: rawOut, priceUsd, decimals: dec, route: quote.routePlan?.length || 0 };
+    schritt = "swap-tx bauen";
     const swapTx = await jupSwapTx(quote);
+    schritt = "signieren+senden";
     const sig = await sendSigned(swapTx);
     return { ok: true, sig, tokens: rawOut, priceUsd, decimals: dec };
-  } catch (e) { return { ok: false, error: e.message }; }
+  } catch (e) {
+    console.error(`[SOLANA BUY FEHLER] Schritt "${schritt}" | Token ${tokenMint} |`, e.stack || e.message);
+    return { ok: false, error: `[${schritt}] ${e.message}` };
+  }
 }
 
 // Verkauf: gesamte Token-Menge -> SOL
