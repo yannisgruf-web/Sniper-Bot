@@ -44,7 +44,13 @@ const JUP_HEADERS = process.env.JUP_API_KEY ? { "x-api-key": process.env.JUP_API
 async function jupQuote(inputMint, outputMint, amount, slippageBps) {
   const url = `${JUP_BASE}/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}&onlyDirectRoutes=false`;
   const r = await fetch(url, { headers: JUP_HEADERS });
-  if (!r.ok) throw new Error(`Jupiter quote ${r.status} (${JUP_BASE})`);
+  if (!r.ok) {
+    // Begründung aus dem Body mitnehmen (z.B. "could not find any route" = Liquidität weg)
+    let grund = "";
+    try { const b = await r.json(); grund = b?.error || b?.message || JSON.stringify(b).slice(0, 150); }
+    catch { try { grund = (await r.text()).slice(0, 150); } catch {} }
+    throw new Error(`Jupiter quote ${r.status}${grund ? ` – ${grund}` : ""} (${JUP_BASE})`);
+  }
   const q = await r.json();
   if (!q || q.error) throw new Error("Jupiter quote: " + (q.error || "leer"));
   return q;
