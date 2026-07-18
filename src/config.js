@@ -110,6 +110,9 @@ module.exports = {
   INDI_HEARTBEAT_MIN:n(process.env.INDI_HEARTBEAT_MIN, 60), // Intervall in Minuten
   INDI_SOURCE:       process.env.INDI_SOURCE || "binance-vision", // binance | binance-vision | bybit | okx
   INDI_SHORTS:       b(process.env.INDI_SHORTS, false),    // Short-Trades zusätzlich zu Longs (getrennt ausgewertet)
+  INDI_TREND_FILTER: b(process.env.INDI_TREND_FILTER, false), // EMA/VWAP/ADX als Richtungs-Gate über den Oszillatoren
+  INDI_TREND_STRICT: b(process.env.INDI_TREND_STRICT, false), // true: EMA muss aktiv PRO Richtung sein; false: darf nur nicht dagegen sein
+  INDI_ADX_MAX:      n(process.env.INDI_ADX_MAX, 30),      // ab diesem ADX keine Gegen-Trend-Trades mehr
 
   // ── Ruhemodus ──
   NOTIFY_PAPER:      b(process.env.NOTIFY_PAPER, false),

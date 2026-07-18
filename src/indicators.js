@@ -204,4 +204,69 @@ function fibGoldenPocket(candles, lookback = 60) {
   return { inPocket, hi, lo, level618, level650, retracePct: +retracePct.toFixed(1) };
 }
 
-module.exports = { sma, ema, rsi, mfi, stochRsi, macd, ttmSqueeze, premierStoch, rsiDivergence, fibGoldenPocket };
+// ── Trendfilter-Berechnungen (dienen als Richtungs-Gate, nicht als Stimmen) ──
+
+// EMA-Trend: Preislage relativ zu schneller/langsamer EMA. +1 aufwärts, -1 abwärts, 0 unklar.
+function emaTrend(closes, fast = 50, slow = 200) {
+  if (closes.length < slow) {
+    // Nicht genug Historie für EMA200 -> mildere Variante mit dem, was da ist.
+    const ef = ema(closes, Math.min(fast, Math.floor(closes.length / 2)));
+    const i = closes.length - 1;
+    if (ef[i] == null) return 0;
+    return closes[i] > ef[i] ? 1 : closes[i] < ef[i] ? -1 : 0;
+  }
+  const ef = ema(closes, fast), es = ema(closes, slow);
+  const i = closes.length - 1;
+  if (ef[i] == null || es[i] == null) return 0;
+  const price = closes[i];
+  if (price > ef[i] && ef[i] > es[i]) return 1;   // sauberer Aufwärts-Stack
+  if (price < ef[i] && ef[i] < es[i]) return -1;  // sauberer Abwärts-Stack
+  return 0;                                        // gemischt -> kein klarer Trend
+}
+
+// ADX: Trendstärke (nicht Richtung). Wilder-Standard, Periode 14.
+function adx(candles, len = 14) {
+  const n = candles.length;
+  if (n < len * 2) return null;
+  let trN = 0, plusN = 0, minusN = 0;
+  const dx = [];
+  for (let i = 1; i < n; i++) {
+    const up = candles[i].h - candles[i - 1].h;
+    const down = candles[i - 1].l - candles[i].l;
+    const plusDM = (up > down && up > 0) ? up : 0;
+    const minusDM = (down > up && down > 0) ? down : 0;
+    const tr = Math.max(candles[i].h - candles[i].l,
+                        Math.abs(candles[i].h - candles[i - 1].c),
+                        Math.abs(candles[i].l - candles[i - 1].c));
+    if (i <= len) { trN += tr; plusN += plusDM; minusN += minusDM; }
+    else {
+      trN = trN - trN / len + tr;
+      plusN = plusN - plusN / len + plusDM;
+      minusN = minusN - minusN / len + minusDM;
+    }
+    if (i >= len) {
+      const plusDI = 100 * plusN / (trN || 1e-9);
+      const minusDI = 100 * minusN / (trN || 1e-9);
+      const sum = plusDI + minusDI || 1e-9;
+      dx.push(100 * Math.abs(plusDI - minusDI) / sum);
+    }
+  }
+  if (dx.length < len) return null;
+  // ADX = geglätteter DX
+  let adxVal = dx.slice(0, len).reduce((a, b) => a + b, 0) / len;
+  for (let i = len; i < dx.length; i++) adxVal = (adxVal * (len - 1) + dx[i]) / len;
+  return adxVal;
+}
+
+// VWAP über das gegebene Kerzenfenster (Session-Näherung). +1 Preis über, -1 darunter.
+function vwapSide(candles, lookback = 96) {   // 96×15m ≈ 24h
+  const win = candles.slice(Math.max(0, candles.length - lookback));
+  let pv = 0, vol = 0;
+  for (const k of win) { const tp = (k.h + k.l + k.c) / 3; pv += tp * k.v; vol += k.v; }
+  if (vol === 0) return 0;
+  const vwap = pv / vol;
+  const price = candles[candles.length - 1].c;
+  return price > vwap ? 1 : price < vwap ? -1 : 0;
+}
+
+module.exports = { sma, ema, rsi, mfi, stochRsi, macd, ttmSqueeze, premierStoch, rsiDivergence, fibGoldenPocket, emaTrend, adx, vwapSide };

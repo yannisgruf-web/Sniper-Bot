@@ -72,17 +72,17 @@ async function fetchJson(url) {
 
 async function fetchCandles(sym) {
   if (QUELLE === "bybit") {
-    const j = await fetchJson(`${BASE}/v5/market/kline?category=spot&symbol=${sym}&interval=15&limit=120`);
+    const j = await fetchJson(`${BASE}/v5/market/kline?category=spot&symbol=${sym}&interval=15&limit=250`);
     const list = (j.result?.list || []).slice().reverse();   // Bybit liefert neueste zuerst
     return list.slice(0, -1).map(k => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
   }
   if (QUELLE === "okx") {
     const inst = sym.replace("USDT", "-USDT");
-    const j = await fetchJson(`${BASE}/api/v5/market/candles?instId=${inst}&bar=15m&limit=120`);
+    const j = await fetchJson(`${BASE}/api/v5/market/candles?instId=${inst}&bar=15m&limit=250`);
     const list = (j.data || []).slice().reverse();           // OKX liefert neueste zuerst
     return list.slice(0, -1).map(k => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
   }
-  const raw = await fetchJson(`${BASE}/api/v3/klines?symbol=${sym}&interval=15m&limit=120`);
+  const raw = await fetchJson(`${BASE}/api/v3/klines?symbol=${sym}&interval=15m&limit=250`);
   return raw.slice(0, -1).map(k => ({ t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
 }
 
@@ -131,6 +131,39 @@ function votes(candles) {
   if (fib.inPocket === 1) bull.push("Fib-GP");
 
   return { bull, bear };
+}
+
+// ── Trend-Gate: erlaubt/verbietet eine Richtung anhand von EMA-Trend, VWAP und ADX.
+// Kein Signal, sondern ein Filter ÜBER den Oszillator-Stimmen. Gibt zurück, ob
+// die gewünschte Richtung ("long"/"short") gehandelt werden darf, plus Begründung.
+function trendGate(candles, side) {
+  if (!cfg.INDI_TREND_FILTER) return { ok: true, grund: "Filter aus" };
+  const closes = candles.map(k => k.c);
+  const richtung = side === "short" ? -1 : 1;
+  const gruende = [];
+
+  // 1. EMA-Trend muss zur Richtung passen (oder neutral sein, je nach Strenge).
+  const et = ind.emaTrend(closes);
+  if (cfg.INDI_TREND_STRICT ? et !== richtung : et === -richtung)
+    return { ok: false, grund: `EMA-Trend ${et > 0 ? "aufwärts" : et < 0 ? "abwärts" : "neutral"} gegen ${side}` };
+  gruende.push(`EMA ${et === richtung ? "pro" : "neutral"}`);
+
+  // 2. VWAP-Seite darf der Richtung nicht widersprechen.
+  const vw = ind.vwapSide(candles);
+  if (vw === -richtung)
+    return { ok: false, grund: `Preis ${vw > 0 ? "über" : "unter"} VWAP gegen ${side}` };
+  gruende.push("VWAP ok");
+
+  // 3. ADX: bei starkem Trend NICHT dagegen handeln. Gegen-Trend-Trades nur in
+  // ruhigen Phasen (ADX niedrig), wo Mean-Reversion funktioniert.
+  const ax = ind.adx(candles);
+  if (ax != null) {
+    const gegenTrend = (et !== 0 && et !== richtung);
+    if (gegenTrend && ax >= cfg.INDI_ADX_MAX)
+      return { ok: false, grund: `ADX ${ax.toFixed(0)} zu stark für Gegen-Trend-${side}` };
+    gruende.push(`ADX ${ax.toFixed(0)}`);
+  }
+  return { ok: true, grund: gruende.join(", ") };
 }
 
 // ── Positionsverwaltung (long ODER short) ──
@@ -191,9 +224,18 @@ async function scan() {
             naehe.push({ sym: sym.replace("USDT", ""), n: long ? v.bull.length : v.bear.length,
                          sig: long ? v.bull : v.bear, dir: long ? "L" : "S" });
           }
-          // Einstieg: Long bei bullischer, Short bei bärischer Konfluenz (falls aktiviert)
-          if (v.bull.length >= cfg.INDI_MIN_VOTES && slotsFrei) openPos(sym, price, v, "long");
-          else if (cfg.INDI_SHORTS && v.bear.length >= cfg.INDI_MIN_VOTES && slotsFrei) openPos(sym, price, v, "short");
+          // Einstieg: Long bei bullischer, Short bei bärischer Konfluenz (falls aktiviert).
+          // Das Trend-Gate kann eine Richtung trotz Konfluenz verbieten.
+          if (v.bull.length >= cfg.INDI_MIN_VOTES && slotsFrei) {
+            const gate = trendGate(candles, "long");
+            if (gate.ok) openPos(sym, price, v, "long");
+            else console.log(`[INDI] Long ${sym} blockiert: ${gate.grund}`);
+          }
+          else if (cfg.INDI_SHORTS && v.bear.length >= cfg.INDI_MIN_VOTES && slotsFrei) {
+            const gate = trendGate(candles, "short");
+            if (gate.ok) openPos(sym, price, v, "short");
+            else console.log(`[INDI] Short ${sym} blockiert: ${gate.grund}`);
+          }
         } else {
           // Bestehende Position: schließen bei Gegen-Konfluenz.
           if (pos.side === "short" && v.bull.length >= cfg.INDI_MIN_VOTES)
