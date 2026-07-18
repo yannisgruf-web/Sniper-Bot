@@ -132,23 +132,31 @@ function offeneSumme() { return Object.values(state.positions).reduce((s, p) => 
 
 // ── Signal-Scan: läuft einmal pro abgeschlossener 15m-Kerze ──
 let scanBusy = false;
+let lastScan = { ts: null, geprueft: 0, kandidaten: [], fehler: 0 };
 async function scan() {
   if (scanBusy) return; scanBusy = true;
+  const naehe = [];   // Kandidaten kurz vor einem Kaufsignal
+  let geprueft = 0, fehler = 0;
   try {
     for (const sym of await topSymbols()) {
       try {
         const candles = await fetchCandles(sym);
         if (candles.length < 60) continue;
         const v = votes(candles);
+        geprueft++;
         const price = candles[candles.length - 1].c;
         const offen = !!state.positions[sym];
+        if (v.bull.length > 0 && !offen)
+          naehe.push({ sym: sym.replace("USDT", ""), n: v.bull.length, sig: v.bull });
         if (!offen && v.bull.length >= cfg.INDI_MIN_VOTES && Object.keys(state.positions).length < cfg.INDI_MAX_POS)
           openPos(sym, price, v);
         else if (offen && v.bear.length >= cfg.INDI_MIN_VOTES)
           closePos(sym, price, `bärische Konfluenz (${v.bear.join(", ")})`);
         await new Promise(r => setTimeout(r, 120));   // Binance-Limits schonen
-      } catch (e) { console.error(`[INDI] ${sym}:`, e.message); }
+      } catch (e) { fehler++; console.error(`[INDI] ${sym}:`, e.message); }
     }
+    naehe.sort((a, b) => b.n - a.n);
+    lastScan = { ts: Date.now(), geprueft, kandidaten: naehe.slice(0, 3), fehler };
   } finally { scanBusy = false; }
 }
 
@@ -178,7 +186,18 @@ async function exitTick() {
 function status() {
   const offen = Object.entries(state.positions).map(([s, p]) =>
     `${s.replace("USDT", "")}: ${p.usd.toFixed(0)}$ @ ${p.entry} (Peak +${p.peakPnl}%)`);
-  return { balance: state.balance, offen, gesamt: state.balance + offeneSumme() };
+  return { balance: state.balance, offen, gesamt: state.balance + offeneSumme(), lastScan };
+}
+// Menschenlesbares Lebenszeichen: wann zuletzt gescannt, wie viele Coins, wer ist nah dran.
+function heartbeatText() {
+  if (!lastScan.ts) return "⏳ Noch kein Scan gelaufen (erster kommt nach dem nächsten 15-Min-Kerzenschluss).";
+  const minAgo = Math.round((Date.now() - lastScan.ts) / 60e3);
+  const kand = lastScan.kandidaten.length
+    ? lastScan.kandidaten.map(k => `${k.sym} ${k.n}/7 (${k.sig.join(",")})`).join("\n")
+    : "keiner mit aktivem Signal";
+  return `💓 <b>Indi-Heartbeat</b>\nLetzter Scan: vor ${minAgo} Min · ${lastScan.geprueft} Coins geprüft${lastScan.fehler ? ` · ${lastScan.fehler} Fehler` : ""}\n` +
+    `Offene Positionen: ${Object.keys(state.positions).length} · frei ${state.balance.toFixed(2)}$\n` +
+    `Nächste Kandidaten (Schwelle ${cfg.INDI_MIN_VOTES}/7):\n${kand}`;
 }
 function bilanz() {
   const arr = load(TRADES, []);
@@ -193,6 +212,7 @@ function bilanz() {
 
 // ── Scheduler: Scan kurz nach jedem 15m-Kerzenschluss, Exits im Minutentakt ──
 let lastSlot = null;
+let lastHeartbeat = 0;
 function start() {
   if (!cfg.INDI_ENABLED) return;
   setInterval(() => {
@@ -201,9 +221,14 @@ function start() {
       lastSlot = slot;
       scan().catch(e => console.error("[INDI] scan:", e.message));
     }
+    // Stündliches Lebenszeichen (nur wenn eingeschaltet), unabhängig vom Handel.
+    if (cfg.INDI_HEARTBEAT && Date.now() - lastHeartbeat >= cfg.INDI_HEARTBEAT_MIN * 60e3) {
+      lastHeartbeat = Date.now();
+      notify(heartbeatText()).catch(() => {});
+    }
   }, 30e3);
   setInterval(() => { exitTick().catch(() => {}); }, 60e3);
   console.log(`[INDI] Engine aktiv: Top-${cfg.INDI_TOP_N} Symbole, 15m, ${cfg.INDI_MIN_VOTES}/7 bull, /6 bear, virtuell ${cfg.INDI_START_USD}$`);
 }
 
-module.exports = { start, scan, exitTick, votes, status, bilanz, state };
+module.exports = { start, scan, exitTick, votes, status, heartbeatText, bilanz, state };

@@ -316,6 +316,9 @@ async function pollCommands() {
         const s = indi.status();
         notify(`📈 <b>Indikator-Engine (Paper)</b>\nGesamt: ${s.gesamt.toFixed(2)}$ · frei: ${s.balance.toFixed(2)}$\nOffen (${s.offen.length}):\n${s.offen.length ? s.offen.join("\n") : "keine"}`).catch(()=>{});
       }
+      else if (text === "/heartbeat" || text === "/hb") {
+        notify(indi.heartbeatText()).catch(()=>{});
+      }
       else if (text === "/indibilanz") {
         const b = indi.bilanz();
         notify(!b.n ? "📈 Noch keine abgeschlossenen Indikator-Trades." :

@@ -106,6 +106,8 @@ module.exports = {
   INDI_SL_PCT:       n(process.env.INDI_SL_PCT, -3),
   INDI_TRAIL_ARM:    n(process.env.INDI_TRAIL_ARM, 2),
   INDI_TRAIL_STEP:   n(process.env.INDI_TRAIL_STEP, 1),
+  INDI_HEARTBEAT:    b(process.env.INDI_HEARTBEAT, true),   // stündliches Lebenszeichen an Telegram
+  INDI_HEARTBEAT_MIN:n(process.env.INDI_HEARTBEAT_MIN, 60), // Intervall in Minuten
 
   // ── Ruhemodus ──
   NOTIFY_PAPER:      b(process.env.NOTIFY_PAPER, false),
