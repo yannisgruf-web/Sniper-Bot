@@ -100,6 +100,7 @@ module.exports = {
   INDI_START_USD:    n(process.env.INDI_START_USD, 1000),
   INDI_POS_USD:      n(process.env.INDI_POS_USD, 100),
   INDI_MAX_POS:      n(process.env.INDI_MAX_POS, 5),
+  INDI_TOP_N:        n(process.env.INDI_TOP_N, 50),         // Top-N liquideste Coins nach 24h-Volumen
   INDI_MIN_VOTES:    n(process.env.INDI_MIN_VOTES, 4),
   INDI_TP_PCT:       n(process.env.INDI_TP_PCT, 5),
   INDI_SL_PCT:       n(process.env.INDI_SL_PCT, -3),

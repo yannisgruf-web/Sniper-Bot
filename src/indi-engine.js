@@ -12,13 +12,30 @@ const FILE = path.join(process.cwd(), "data", "indi-portfolio.json");
 const TRADES = path.join(process.cwd(), "data", "indi-trades.json");
 const BINANCE = "https://api.binance.com";
 
-// Statische Liste liquider USDT-Paare (per INDI_SYMBOLS überschreibbar, kommagetrennt)
+// Statische Fallback-Liste (falls die Volumen-Abfrage scheitert)
 const DEFAULT_SYMBOLS = ("BTC,ETH,BNB,SOL,XRP,ADA,DOGE,AVAX,DOT,LINK,TON,MATIC,ICP,SHIB,LTC,BCH,UNI,ATOM,ETC,XLM," +
   "NEAR,APT,FIL,ARB,OP,VET,INJ,GRT,ALGO,FTM,THETA,RUNE,SEI,SUI,TIA,IMX,LDO,STX,EGLD,FLOW," +
   "SAND,MANA,AXS,AAVE,MKR,SNX,CRV,KAVA,ROSE,CHZ").split(",").map(s => s.trim() + "USDT");
 
-function symbols() {
-  return (process.env.INDI_SYMBOLS ? process.env.INDI_SYMBOLS.split(",").map(s => s.trim().toUpperCase() + (s.trim().toUpperCase().endsWith("USDT") ? "" : "USDT")) : DEFAULT_SYMBOLS);
+// Stablecoins & gewrappte Token, die nie gehandelt werden sollen (kein echtes Momentum).
+const AUSSCHLUSS = /^(USDC|FDUSD|TUSD|USDP|DAI|BUSD|EUR|WBTC|WBETH|BETH|USDT)USDT$/;
+
+let symbolCache = { list: null, ts: 0 };
+// Top-N liquideste USDT-Paare nach 24h-Quote-Volumen, 1h gecacht.
+async function topSymbols() {
+  if (process.env.INDI_SYMBOLS)
+    return process.env.INDI_SYMBOLS.split(",").map(s => { const u = s.trim().toUpperCase(); return u.endsWith("USDT") ? u : u + "USDT"; });
+  if (symbolCache.list && Date.now() - symbolCache.ts < 3600e3) return symbolCache.list;
+  try {
+    const all = await fetchJson(`${BINANCE}/api/v3/ticker/24hr`);
+    const ranked = all
+      .filter(t => t.symbol.endsWith("USDT") && !AUSSCHLUSS.test(t.symbol))
+      .sort((a, b) => +b.quoteVolume - +a.quoteVolume)
+      .slice(0, cfg.INDI_TOP_N)
+      .map(t => t.symbol);
+    if (ranked.length >= 20) { symbolCache = { list: ranked, ts: Date.now() }; return ranked; }
+  } catch (e) { console.error("[INDI] Symbolliste (nutze Fallback):", e.message); }
+  return DEFAULT_SYMBOLS.slice(0, cfg.INDI_TOP_N);
 }
 
 function load(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
@@ -111,7 +128,7 @@ let scanBusy = false;
 async function scan() {
   if (scanBusy) return; scanBusy = true;
   try {
-    for (const sym of symbols()) {
+    for (const sym of await topSymbols()) {
       try {
         const candles = await fetchCandles(sym);
         if (candles.length < 60) continue;
@@ -179,7 +196,7 @@ function start() {
     }
   }, 30e3);
   setInterval(() => { exitTick().catch(() => {}); }, 60e3);
-  console.log(`[INDI] Engine aktiv: ${symbols().length} Symbole, 15m, ${cfg.INDI_MIN_VOTES}/6 Konfluenz, virtuell ${cfg.INDI_START_USD}$`);
+  console.log(`[INDI] Engine aktiv: Top-${cfg.INDI_TOP_N} Symbole, 15m, ${cfg.INDI_MIN_VOTES}/6 Konfluenz, virtuell ${cfg.INDI_START_USD}$`);
 }
 
 module.exports = { start, scan, exitTick, votes, status, bilanz, state };
