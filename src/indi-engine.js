@@ -133,29 +133,37 @@ function votes(candles) {
   return { bull, bear };
 }
 
-// ── Positionsverwaltung ──
-function openPos(sym, price, v) {
+// ── Positionsverwaltung (long ODER short) ──
+function openPos(sym, price, v, side) {
   const usd = Math.min(cfg.INDI_POS_USD, state.balance);
   if (usd < 10) return;
   state.balance -= usd;
-  state.positions[sym] = { entry: price, usd, qty: usd / price, openedAt: Date.now(), peakPnl: 0, votes: v.bull };
+  const sig = side === "short" ? v.bear : v.bull;
+  state.positions[sym] = { side, entry: price, usd, qty: usd / price, openedAt: Date.now(), peakPnl: 0, votes: sig };
   persist();
-  notify(`🟢 <b>INDI Kauf ${sym.replace("USDT", "")}</b> (Paper)\n${usd.toFixed(0)}$ @ ${price}\nSignale (${v.bull.length}/7): ${v.bull.join(", ")}\nRest-Guthaben: ${state.balance.toFixed(2)}$`).catch(() => {});
+  const pfeil = side === "short" ? "🔴📉" : "🟢";
+  const wort = side === "short" ? "Short" : "Kauf";
+  const max = side === "short" ? 6 : 7;
+  notify(`${pfeil} <b>INDI ${wort} ${sym.replace("USDT", "")}</b> (Paper)\n${usd.toFixed(0)}$ @ ${price}\nSignale (${sig.length}/${max}): ${sig.join(", ")}\nRest-Guthaben: ${state.balance.toFixed(2)}$`).catch(() => {});
 }
 
 function closePos(sym, price, grund) {
   const pos = state.positions[sym];
   if (!pos) return;
-  const out = pos.qty * price;
-  const pnl = out - pos.usd;
-  const pnlPct = (pnl / pos.usd) * 100;
-  state.balance += out;
+  const side = pos.side || "long";
+  // PnL richtungsabhängig: Long profitiert von steigendem, Short von fallendem Preis.
+  const pnlPct = side === "short"
+    ? ((pos.entry - price) / pos.entry) * 100
+    : ((price - pos.entry) / pos.entry) * 100;
+  const pnl = pos.usd * (pnlPct / 100);
+  state.balance += pos.usd + pnl;   // Einsatz zurück + Gewinn/Verlust
   delete state.positions[sym];
   persist();
-  logTrade({ symbol: sym.replace("USDT", ""), entry: pos.entry, exit: price, sizeUsd: pos.usd,
+  logTrade({ symbol: sym.replace("USDT", ""), side, entry: pos.entry, exit: price, sizeUsd: pos.usd,
              pnlUsd: +pnl.toFixed(2), pnlPct: +pnlPct.toFixed(2), grund,
              haltedauerMin: +((Date.now() - pos.openedAt) / 60e3).toFixed(0), votes: pos.votes });
-  notify(`${pnl >= 0 ? "✅" : "❌"} <b>INDI Verkauf ${sym.replace("USDT", "")}</b> (Paper)\nPnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%) · ${grund}\nGuthaben: ${(state.balance + offeneSumme()).toFixed(2)}$ (davon ${state.balance.toFixed(2)}$ frei)`).catch(() => {});
+  const wort = side === "short" ? "Short-Exit" : "Verkauf";
+  notify(`${pnl >= 0 ? "✅" : "❌"} <b>INDI ${wort} ${sym.replace("USDT", "")}</b> (Paper)\nPnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%) · ${grund}\nGuthaben: ${(state.balance + offeneSumme()).toFixed(2)}$ (davon ${state.balance.toFixed(2)}$ frei)`).catch(() => {});
 }
 function offeneSumme() { return Object.values(state.positions).reduce((s, p) => s + p.usd, 0); }
 
@@ -174,13 +182,25 @@ async function scan() {
         const v = votes(candles);
         geprueft++;
         const price = candles[candles.length - 1].c;
-        const offen = !!state.positions[sym];
-        if (v.bull.length > 0 && !offen)
-          naehe.push({ sym: sym.replace("USDT", ""), n: v.bull.length, sig: v.bull });
-        if (!offen && v.bull.length >= cfg.INDI_MIN_VOTES && Object.keys(state.positions).length < cfg.INDI_MAX_POS)
-          openPos(sym, price, v);
-        else if (offen && v.bear.length >= cfg.INDI_MIN_VOTES)
-          closePos(sym, price, `bärische Konfluenz (${v.bear.join(", ")})`);
+        const pos = state.positions[sym];
+        const slotsFrei = Object.keys(state.positions).length < cfg.INDI_MAX_POS;
+        if (!pos) {
+          // Kandidaten fürs Heartbeat sammeln (stärkere Seite zählt)
+          if (v.bull.length > 0 || v.bear.length > 0) {
+            const long = v.bull.length >= v.bear.length;
+            naehe.push({ sym: sym.replace("USDT", ""), n: long ? v.bull.length : v.bear.length,
+                         sig: long ? v.bull : v.bear, dir: long ? "L" : "S" });
+          }
+          // Einstieg: Long bei bullischer, Short bei bärischer Konfluenz (falls aktiviert)
+          if (v.bull.length >= cfg.INDI_MIN_VOTES && slotsFrei) openPos(sym, price, v, "long");
+          else if (cfg.INDI_SHORTS && v.bear.length >= cfg.INDI_MIN_VOTES && slotsFrei) openPos(sym, price, v, "short");
+        } else {
+          // Bestehende Position: schließen bei Gegen-Konfluenz.
+          if (pos.side === "short" && v.bull.length >= cfg.INDI_MIN_VOTES)
+            closePos(sym, price, `bullische Konfluenz (${v.bull.join(", ")})`);
+          else if ((pos.side || "long") === "long" && v.bear.length >= cfg.INDI_MIN_VOTES)
+            closePos(sym, price, `bärische Konfluenz (${v.bear.join(", ")})`);
+        }
         await new Promise(r => setTimeout(r, 120));   // Binance-Limits schonen
       } catch (e) { fehler++; letzterFehler = e.message; console.error(`[INDI] ${sym}:`, e.message); }
     }
@@ -205,7 +225,10 @@ async function exitTick() {
     const pos = state.positions[sym];
     const price = priceMap[sym];
     if (!price) continue;
-    const pnl = ((price - pos.entry) / pos.entry) * 100;
+    // PnL richtungsabhängig – für Shorts steigt der Gewinn bei fallendem Preis.
+    const pnl = (pos.side === "short")
+      ? ((pos.entry - price) / pos.entry) * 100
+      : ((price - pos.entry) / pos.entry) * 100;
     if (pnl > pos.peakPnl) { pos.peakPnl = +pnl.toFixed(2); persist(); }
     if (pnl >= cfg.INDI_TP_PCT) { closePos(sym, price, `take-profit (+${pnl.toFixed(1)}%)`); continue; }
     if (pnl <= cfg.INDI_SL_PCT) { closePos(sym, price, `stop-loss (${pnl.toFixed(1)}%)`); continue; }
@@ -227,7 +250,7 @@ function heartbeatText() {
   if (!lastScan.ts) return "⏳ Noch kein Scan gelaufen (erster kommt nach dem nächsten 15-Min-Kerzenschluss).";
   const minAgo = Math.round((Date.now() - lastScan.ts) / 60e3);
   const kand = lastScan.kandidaten.length
-    ? lastScan.kandidaten.map(k => `${k.sym} ${k.n}/7 (${k.sig.join(",")})`).join("\n")
+    ? lastScan.kandidaten.map(k => `${k.sym} [${k.dir}] ${k.n}/${k.dir === "S" ? 6 : 7} (${k.sig.join(",")})`).join("\n")
     : "keiner mit aktivem Signal";
   const fehlerZeile = lastScan.fehler ? `\n⚠️ ${lastScan.fehler} Fehler` + (lastScan.letzterFehler ? ` – ${String(lastScan.letzterFehler).slice(0, 120)}` : "") : "";
   return `💓 <b>Indi-Heartbeat</b> (Quelle: ${QUELLE})\nLetzter Scan: vor ${minAgo} Min · ${lastScan.geprueft} Coins geprüft${fehlerZeile}\n` +
@@ -237,12 +260,18 @@ function heartbeatText() {
 function bilanz() {
   const arr = load(TRADES, []);
   if (!arr.length) return { n: 0 };
-  const pnl = arr.reduce((s, t) => s + t.pnlUsd, 0);
-  const wins = arr.filter(t => t.pnlUsd > 0);
-  const sorted = [...arr].sort((a, b) => b.pnlUsd - a.pnlUsd);
-  return { n: arr.length, pnlUsd: +pnl.toFixed(2), winRate: +(wins.length / arr.length * 100).toFixed(0),
-           best: sorted[0], worst: sorted[sorted.length - 1],
-           avgHaltMin: +(arr.reduce((s, t) => s + (t.haltedauerMin || 0), 0) / arr.length).toFixed(0) };
+  const auswert = (trades) => {
+    if (!trades.length) return null;
+    const pnl = trades.reduce((s, t) => s + t.pnlUsd, 0);
+    const wins = trades.filter(t => t.pnlUsd > 0);
+    const sorted = [...trades].sort((a, b) => b.pnlUsd - a.pnlUsd);
+    return { n: trades.length, pnlUsd: +pnl.toFixed(2), winRate: +(wins.length / trades.length * 100).toFixed(0),
+             best: sorted[0], worst: sorted[sorted.length - 1],
+             avgHaltMin: +(trades.reduce((s, t) => s + (t.haltedauerMin || 0), 0) / trades.length).toFixed(0) };
+  };
+  const longs = arr.filter(t => (t.side || "long") === "long");
+  const shorts = arr.filter(t => t.side === "short");
+  return { n: arr.length, gesamt: auswert(arr), long: auswert(longs), short: auswert(shorts) };
 }
 
 // ── Scheduler: Scan kurz nach jedem 15m-Kerzenschluss, Exits im Minutentakt ──
@@ -263,7 +292,7 @@ function start() {
     }
   }, 30e3);
   setInterval(() => { exitTick().catch(() => {}); }, 60e3);
-  console.log(`[INDI] Engine aktiv (Quelle ${QUELLE}): Top-${cfg.INDI_TOP_N} Symbole, 15m, ${cfg.INDI_MIN_VOTES}/7 bull, /6 bear, virtuell ${cfg.INDI_START_USD}$`);
+  console.log(`[INDI] Engine aktiv (Quelle ${QUELLE}): Top-${cfg.INDI_TOP_N} Symbole, 15m, ${cfg.INDI_MIN_VOTES}er-Konfluenz, Shorts=${cfg.INDI_SHORTS ? "AN" : "aus"}, virtuell ${cfg.INDI_START_USD}$`);
 }
 
 module.exports = { start, scan, exitTick, votes, status, heartbeatText, bilanz, state };

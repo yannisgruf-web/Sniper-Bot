@@ -321,8 +321,16 @@ async function pollCommands() {
       }
       else if (text === "/indibilanz") {
         const b = indi.bilanz();
-        notify(!b.n ? "📈 Noch keine abgeschlossenen Indikator-Trades." :
-          `📈 <b>Indikator-Bilanz (${b.n} Trades)</b>\nPnL: ${b.pnlUsd >= 0 ? "+" : ""}${b.pnlUsd}$ · Trefferquote: ${b.winRate}%\nØ Haltedauer: ${b.avgHaltMin} Min\nBester: ${b.best.symbol} (${b.best.pnlUsd >= 0 ? "+" : ""}${b.best.pnlUsd}$)\nSchlechtester: ${b.worst.symbol} (${b.worst.pnlUsd}$)`).catch(()=>{});
+        if (!b.n) { notify("📈 Noch keine abgeschlossenen Indikator-Trades.").catch(()=>{}); }
+        else {
+          const block = (titel, s) => !s ? "" :
+            `\n<b>${titel}</b> (${s.n}): PnL ${s.pnlUsd >= 0 ? "+" : ""}${s.pnlUsd}$ · Treffer ${s.winRate}% · Ø ${s.avgHaltMin}min`;
+          notify(`📈 <b>Indikator-Bilanz</b> — ${b.n} Trades gesamt` +
+            block("Gesamt", b.gesamt) +
+            block("Long", b.long) +
+            block("Short", b.short) +
+            `\n\nBester: ${b.gesamt.best.symbol} (${b.gesamt.best.pnlUsd >= 0 ? "+" : ""}${b.gesamt.best.pnlUsd}$) · Schlechtester: ${b.gesamt.worst.symbol} (${b.gesamt.worst.pnlUsd}$)`).catch(()=>{});
+        }
       }
       else if (text === "/bilanz") {
         const gapLog = require("./gap-log");
