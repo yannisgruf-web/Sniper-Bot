@@ -10,7 +10,17 @@ const ind = require("./indicators");
 
 const FILE = path.join(process.cwd(), "data", "indi-portfolio.json");
 const TRADES = path.join(process.cwd(), "data", "indi-trades.json");
-const BINANCE = "https://api.binance.com";
+
+// Datenquelle umschaltbar: Binance sperrt viele Cloud-/US-IPs. data.api.binance.vision
+// ist ein sperrfreier Read-Only-Spiegel; Bybit und OKX sind vollwertige Alternativen.
+const QUELLE = (process.env.INDI_SOURCE || "binance-vision").toLowerCase();
+const HOSTS = {
+  "binance":        "https://api.binance.com",
+  "binance-vision": "https://data-api.binance.vision",
+  "bybit":          "https://api.bybit.com",
+  "okx":            "https://www.okx.com",
+};
+const BASE = HOSTS[QUELLE] || HOSTS["binance-vision"];
 
 // Statische Fallback-Liste (falls die Volumen-Abfrage scheitert)
 const DEFAULT_SYMBOLS = ("BTC,ETH,BNB,SOL,XRP,ADA,DOGE,AVAX,DOT,LINK,TON,MATIC,ICP,SHIB,LTC,BCH,UNI,ATOM,ETC,XLM," +
@@ -21,18 +31,27 @@ const DEFAULT_SYMBOLS = ("BTC,ETH,BNB,SOL,XRP,ADA,DOGE,AVAX,DOT,LINK,TON,MATIC,I
 const AUSSCHLUSS = /^(USDC|FDUSD|TUSD|USDP|DAI|BUSD|EUR|WBTC|WBETH|BETH|USDT)USDT$/;
 
 let symbolCache = { list: null, ts: 0 };
-// Top-N liquideste USDT-Paare nach 24h-Quote-Volumen, 1h gecacht.
+// Top-N liquideste USDT-Paare nach 24h-Quote-Volumen, 1h gecacht. Quellenabhängig.
 async function topSymbols() {
   if (process.env.INDI_SYMBOLS)
     return process.env.INDI_SYMBOLS.split(",").map(s => { const u = s.trim().toUpperCase(); return u.endsWith("USDT") ? u : u + "USDT"; });
   if (symbolCache.list && Date.now() - symbolCache.ts < 3600e3) return symbolCache.list;
   try {
-    const all = await fetchJson(`${BINANCE}/api/v3/ticker/24hr`);
-    const ranked = all
-      .filter(t => t.symbol.endsWith("USDT") && !AUSSCHLUSS.test(t.symbol))
-      .sort((a, b) => +b.quoteVolume - +a.quoteVolume)
-      .slice(0, cfg.INDI_TOP_N)
-      .map(t => t.symbol);
+    let paare = [];
+    if (QUELLE === "bybit") {
+      const j = await fetchJson(`${BASE}/v5/market/tickers?category=spot`);
+      paare = (j.result?.list || []).filter(t => t.symbol.endsWith("USDT"))
+        .map(t => ({ symbol: t.symbol, vol: +t.turnover24h }));
+    } else if (QUELLE === "okx") {
+      const j = await fetchJson(`${BASE}/api/v5/market/tickers?instType=SPOT`);
+      paare = (j.data || []).filter(t => t.instId.endsWith("-USDT"))
+        .map(t => ({ symbol: t.instId.replace("-", ""), vol: +t.volCcy24h }));
+    } else {
+      const all = await fetchJson(`${BASE}/api/v3/ticker/24hr`);
+      paare = all.filter(t => t.symbol.endsWith("USDT")).map(t => ({ symbol: t.symbol, vol: +t.quoteVolume }));
+    }
+    const ranked = paare.filter(t => !AUSSCHLUSS.test(t.symbol))
+      .sort((a, b) => b.vol - a.vol).slice(0, cfg.INDI_TOP_N).map(t => t.symbol);
     if (ranked.length >= 20) { symbolCache = { list: ranked, ts: Date.now() }; return ranked; }
   } catch (e) { console.error("[INDI] Symbolliste (nutze Fallback):", e.message); }
   return DEFAULT_SYMBOLS.slice(0, cfg.INDI_TOP_N);
@@ -52,8 +71,18 @@ async function fetchJson(url) {
 }
 
 async function fetchCandles(sym) {
-  const raw = await fetchJson(`${BINANCE}/api/v3/klines?symbol=${sym}&interval=15m&limit=120`);
-  // Letzte Kerze ist die LAUFENDE -> weglassen, nur abgeschlossene bewerten.
+  if (QUELLE === "bybit") {
+    const j = await fetchJson(`${BASE}/v5/market/kline?category=spot&symbol=${sym}&interval=15&limit=120`);
+    const list = (j.result?.list || []).slice().reverse();   // Bybit liefert neueste zuerst
+    return list.slice(0, -1).map(k => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
+  }
+  if (QUELLE === "okx") {
+    const inst = sym.replace("USDT", "-USDT");
+    const j = await fetchJson(`${BASE}/api/v5/market/candles?instId=${inst}&bar=15m&limit=120`);
+    const list = (j.data || []).slice().reverse();           // OKX liefert neueste zuerst
+    return list.slice(0, -1).map(k => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
+  }
+  const raw = await fetchJson(`${BASE}/api/v3/klines?symbol=${sym}&interval=15m&limit=120`);
   return raw.slice(0, -1).map(k => ({ t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
 }
 
@@ -136,7 +165,7 @@ let lastScan = { ts: null, geprueft: 0, kandidaten: [], fehler: 0 };
 async function scan() {
   if (scanBusy) return; scanBusy = true;
   const naehe = [];   // Kandidaten kurz vor einem Kaufsignal
-  let geprueft = 0, fehler = 0;
+  let geprueft = 0, fehler = 0, letzterFehler = null;
   try {
     for (const sym of await topSymbols()) {
       try {
@@ -153,10 +182,10 @@ async function scan() {
         else if (offen && v.bear.length >= cfg.INDI_MIN_VOTES)
           closePos(sym, price, `bärische Konfluenz (${v.bear.join(", ")})`);
         await new Promise(r => setTimeout(r, 120));   // Binance-Limits schonen
-      } catch (e) { fehler++; console.error(`[INDI] ${sym}:`, e.message); }
+      } catch (e) { fehler++; letzterFehler = e.message; console.error(`[INDI] ${sym}:`, e.message); }
     }
     naehe.sort((a, b) => b.n - a.n);
-    lastScan = { ts: Date.now(), geprueft, kandidaten: naehe.slice(0, 3), fehler };
+    lastScan = { ts: Date.now(), geprueft, kandidaten: naehe.slice(0, 3), fehler, letzterFehler };
   } finally { scanBusy = false; }
 }
 
@@ -164,9 +193,14 @@ async function scan() {
 async function exitTick() {
   const syms = Object.keys(state.positions);
   if (!syms.length) return;
-  let tickers;
-  try { tickers = await fetchJson(`${BINANCE}/api/v3/ticker/price`); } catch { return; }
-  const priceMap = Object.fromEntries(tickers.map(t => [t.symbol, +t.price]));
+  // Aktuellen Preis je offener Position holen (letzte abgeschlossene Kerze).
+  // Quellenunabhängig – nutzt denselben fetchCandles-Pfad wie der Scan.
+  const priceMap = {};
+  for (const sym of syms) {
+    try { const c = await fetchCandles(sym); if (c.length) priceMap[sym] = c[c.length - 1].c; }
+    catch (e) { console.error(`[INDI] exit-preis ${sym}:`, e.message); }
+    await new Promise(r => setTimeout(r, 120));
+  }
   for (const sym of syms) {
     const pos = state.positions[sym];
     const price = priceMap[sym];
@@ -195,7 +229,8 @@ function heartbeatText() {
   const kand = lastScan.kandidaten.length
     ? lastScan.kandidaten.map(k => `${k.sym} ${k.n}/7 (${k.sig.join(",")})`).join("\n")
     : "keiner mit aktivem Signal";
-  return `💓 <b>Indi-Heartbeat</b>\nLetzter Scan: vor ${minAgo} Min · ${lastScan.geprueft} Coins geprüft${lastScan.fehler ? ` · ${lastScan.fehler} Fehler` : ""}\n` +
+  const fehlerZeile = lastScan.fehler ? `\n⚠️ ${lastScan.fehler} Fehler` + (lastScan.letzterFehler ? ` – ${String(lastScan.letzterFehler).slice(0, 120)}` : "") : "";
+  return `💓 <b>Indi-Heartbeat</b> (Quelle: ${QUELLE})\nLetzter Scan: vor ${minAgo} Min · ${lastScan.geprueft} Coins geprüft${fehlerZeile}\n` +
     `Offene Positionen: ${Object.keys(state.positions).length} · frei ${state.balance.toFixed(2)}$\n` +
     `Nächste Kandidaten (Schwelle ${cfg.INDI_MIN_VOTES}/7):\n${kand}`;
 }
@@ -228,7 +263,7 @@ function start() {
     }
   }, 30e3);
   setInterval(() => { exitTick().catch(() => {}); }, 60e3);
-  console.log(`[INDI] Engine aktiv: Top-${cfg.INDI_TOP_N} Symbole, 15m, ${cfg.INDI_MIN_VOTES}/7 bull, /6 bear, virtuell ${cfg.INDI_START_USD}$`);
+  console.log(`[INDI] Engine aktiv (Quelle ${QUELLE}): Top-${cfg.INDI_TOP_N} Symbole, 15m, ${cfg.INDI_MIN_VOTES}/7 bull, /6 bear, virtuell ${cfg.INDI_START_USD}$`);
 }
 
 module.exports = { start, scan, exitTick, votes, status, heartbeatText, bilanz, state };

@@ -108,6 +108,7 @@ module.exports = {
   INDI_TRAIL_STEP:   n(process.env.INDI_TRAIL_STEP, 1),
   INDI_HEARTBEAT:    b(process.env.INDI_HEARTBEAT, true),   // stündliches Lebenszeichen an Telegram
   INDI_HEARTBEAT_MIN:n(process.env.INDI_HEARTBEAT_MIN, 60), // Intervall in Minuten
+  INDI_SOURCE:       process.env.INDI_SOURCE || "binance-vision", // binance | binance-vision | bybit | okx
 
   // ── Ruhemodus ──
   NOTIFY_PAPER:      b(process.env.NOTIFY_PAPER, false),
