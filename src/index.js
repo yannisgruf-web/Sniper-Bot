@@ -12,6 +12,7 @@ const blacklist = require("./blacklist");
 const paper = require("./paper");
 const { notify } = require("./telegram");
 const { solUsd, bnbUsd } = require("./prices");
+const indi = require("./indi-engine");
 const executor = require("./executor");
 
 const boot = Date.now();
@@ -270,7 +271,14 @@ async function pollCommands() {
       else if (text === "/weiter") { const r = executor.resume(); notify(r.enabled ? `▶️ <b>Nächster Trade freigegeben</b>\nEin-Trade-Test neu scharf. Tages-PnL läuft weiter: ${r.pnlUsdToday>=0?"+":""}${r.pnlUsdToday}$ (Limit −$${cfg.DAILY_LOSS_LIMIT_USD})`
         : "⚠️ LIVE_TRADING ist in Railway auf false – /weiter wirkt erst, wenn es an ist.").catch(()=>{}); }
       else if (text === "/aufraeumen" || text === "/aufraeumen ja") {
+        // Läuft im HINTERGRUND: die Befehlsschleife bleibt ansprechbar (/status etc.),
+        // und eine Beschäftigt-Sperre verhindert gestapelte Mehrfachstarts.
+        if (global.__cleanupBusy) { notify("🧹 Aufräumen läuft bereits – bitte warten, Ergebnis kommt automatisch.").catch(()=>{}); continue; }
+        global.__cleanupBusy = true;
+        const cleanupCmd = text;
+        (async () => {
         const cleanup = require("./cleanup");
+        const text = cleanupCmd;
         if (text === "/aufraeumen") {
           notify("🧹 Analysiere Token-Konten – dauert je nach Anzahl bis zu einer Minute...").catch(()=>{});
           const su = await solUsd().catch(() => 160);
@@ -300,6 +308,17 @@ async function pollCommands() {
               (r.fehler.length ? `Fehler:\n${r.fehler.join("\n").slice(0, 500)}` : "Keine Fehler.")).catch(()=>{});
           }
         }
+        })().catch(e => { console.error("[CLEANUP-CMD]", e.message); notify("⚠️ Aufräumen abgebrochen: " + e.message).catch(()=>{}); })
+          .finally(() => { global.__cleanupBusy = false; });
+      }
+      else if (text === "/indi") {
+        const s = indi.status();
+        notify(`📈 <b>Indikator-Engine (Paper)</b>\nGesamt: ${s.gesamt.toFixed(2)}$ · frei: ${s.balance.toFixed(2)}$\nOffen (${s.offen.length}):\n${s.offen.length ? s.offen.join("\n") : "keine"}`).catch(()=>{});
+      }
+      else if (text === "/indibilanz") {
+        const b = indi.bilanz();
+        notify(!b.n ? "📈 Noch keine abgeschlossenen Indikator-Trades." :
+          `📈 <b>Indikator-Bilanz (${b.n} Trades)</b>\nPnL: ${b.pnlUsd >= 0 ? "+" : ""}${b.pnlUsd}$ · Trefferquote: ${b.winRate}%\nØ Haltedauer: ${b.avgHaltMin} Min\nBester: ${b.best.symbol} (${b.best.pnlUsd >= 0 ? "+" : ""}${b.best.pnlUsd}$)\nSchlechtester: ${b.worst.symbol} (${b.worst.pnlUsd}$)`).catch(()=>{});
       }
       else if (text === "/bilanz") {
         const gapLog = require("./gap-log");
@@ -322,6 +341,7 @@ async function pollCommands() {
 }
 pollCommands();
 
+indi.start();
 process.on("SIGTERM", async () => { await paper.flush(); process.exit(0); });
 const solX = require("./exec-solana");
 const bscX = require("./exec-bsc");
