@@ -324,12 +324,13 @@ async function pollCommands() {
         if (!b.n) { notify("📈 Noch keine abgeschlossenen Indikator-Trades.").catch(()=>{}); }
         else {
           const block = (titel, s) => !s ? "" :
-            `\n<b>${titel}</b> (${s.n}): PnL ${s.pnlUsd >= 0 ? "+" : ""}${s.pnlUsd}$ · Treffer ${s.winRate}% · Ø ${s.avgHaltMin}min`;
-          notify(`📈 <b>Indikator-Bilanz</b> — ${b.n} Trades gesamt` +
+            `\n<b>${titel}</b> (${s.n}): Netto ${s.pnlUsd >= 0 ? "+" : ""}${s.pnlUsd}$ · Treffer ${s.winRate}% · Ø ${s.avgHaltMin}min`;
+          notify(`📈 <b>Indikator-Bilanz</b> — ${b.n} Trades gesamt (nach Gebühren)` +
             block("Gesamt", b.gesamt) +
             block("Long", b.long) +
             block("Short", b.short) +
-            `\n\nBester: ${b.gesamt.best.symbol} (${b.gesamt.best.pnlUsd >= 0 ? "+" : ""}${b.gesamt.best.pnlUsd}$) · Schlechtester: ${b.gesamt.worst.symbol} (${b.gesamt.worst.pnlUsd}$)`).catch(()=>{});
+            `\n\n💸 Gebühren gesamt: ${b.gesamt.kostenUsd}$` +
+            `\nBester: ${b.gesamt.best.symbol} (${b.gesamt.best.pnlUsd >= 0 ? "+" : ""}${b.gesamt.best.pnlUsd}$) · Schlechtester: ${b.gesamt.worst.symbol} (${b.gesamt.worst.pnlUsd}$)`).catch(()=>{});
         }
       }
       else if (text === "/bilanz") {

@@ -184,19 +184,29 @@ function closePos(sym, price, grund) {
   const pos = state.positions[sym];
   if (!pos) return;
   const side = pos.side || "long";
-  // PnL richtungsabhängig: Long profitiert von steigendem, Short von fallendem Preis.
-  const pnlPct = side === "short"
+  // Brutto-PnL richtungsabhängig: Long profitiert von steigendem, Short von fallendem Preis.
+  const bruttoPct = side === "short"
     ? ((pos.entry - price) / pos.entry) * 100
     : ((price - pos.entry) / pos.entry) * 100;
-  const pnl = pos.usd * (pnlPct / 100);
-  state.balance += pos.usd + pnl;   // Einsatz zurück + Gewinn/Verlust
+  const bruttoUsd = pos.usd * (bruttoPct / 100);
+  // Gebühren: FEE_PCT je Seite (Kauf + Verkauf) auf das Positionsvolumen.
+  // Näherung: Volumen ~ Einsatz auf beiden Seiten. Bei Shorts zusätzlich Funding.
+  const fee = cfg.INDI_FEE_PCT / 100;
+  const gebuehrUsd = cfg.INDI_FEES ? pos.usd * fee * 2 : 0;
+  const haltStd = (Date.now() - pos.openedAt) / 3600e3;
+  const fundingUsd = (cfg.INDI_FEES && side === "short") ? pos.usd * (cfg.INDI_FUNDING_PCT / 100) * Math.max(1, Math.ceil(haltStd / 8)) : 0;
+  const nettoUsd = bruttoUsd - gebuehrUsd - fundingUsd;
+  const nettoPct = (nettoUsd / pos.usd) * 100;
+  state.balance += pos.usd + nettoUsd;   // Einsatz zurück + Netto-Ergebnis
   delete state.positions[sym];
   persist();
   logTrade({ symbol: sym.replace("USDT", ""), side, entry: pos.entry, exit: price, sizeUsd: pos.usd,
-             pnlUsd: +pnl.toFixed(2), pnlPct: +pnlPct.toFixed(2), grund,
+             bruttoPct: +bruttoPct.toFixed(2), gebuehrUsd: +(gebuehrUsd + fundingUsd).toFixed(3),
+             pnlUsd: +nettoUsd.toFixed(2), pnlPct: +nettoPct.toFixed(2), grund,
              haltedauerMin: +((Date.now() - pos.openedAt) / 60e3).toFixed(0), votes: pos.votes });
   const wort = side === "short" ? "Short-Exit" : "Verkauf";
-  notify(`${pnl >= 0 ? "✅" : "❌"} <b>INDI ${wort} ${sym.replace("USDT", "")}</b> (Paper)\nPnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%) · ${grund}\nGuthaben: ${(state.balance + offeneSumme()).toFixed(2)}$ (davon ${state.balance.toFixed(2)}$ frei)`).catch(() => {});
+  const kostenHinweis = cfg.INDI_FEES ? ` · Kosten ${(gebuehrUsd + fundingUsd).toFixed(2)}$` : "";
+  notify(`${nettoUsd >= 0 ? "✅" : "❌"} <b>INDI ${wort} ${sym.replace("USDT", "")}</b> (Paper)\nNetto ${nettoUsd >= 0 ? "+" : ""}${nettoUsd.toFixed(2)}$ (${nettoPct >= 0 ? "+" : ""}${nettoPct.toFixed(1)}%)${kostenHinweis} · ${grund}\nGuthaben: ${(state.balance + offeneSumme()).toFixed(2)}$ (davon ${state.balance.toFixed(2)}$ frei)`).catch(() => {});
 }
 function offeneSumme() { return Object.values(state.positions).reduce((s, p) => s + p.usd, 0); }
 
@@ -305,9 +315,11 @@ function bilanz() {
   const auswert = (trades) => {
     if (!trades.length) return null;
     const pnl = trades.reduce((s, t) => s + t.pnlUsd, 0);
+    const kosten = trades.reduce((s, t) => s + (t.gebuehrUsd || 0), 0);
     const wins = trades.filter(t => t.pnlUsd > 0);
     const sorted = [...trades].sort((a, b) => b.pnlUsd - a.pnlUsd);
-    return { n: trades.length, pnlUsd: +pnl.toFixed(2), winRate: +(wins.length / trades.length * 100).toFixed(0),
+    return { n: trades.length, pnlUsd: +pnl.toFixed(2), kostenUsd: +kosten.toFixed(2),
+             winRate: +(wins.length / trades.length * 100).toFixed(0),
              best: sorted[0], worst: sorted[sorted.length - 1],
              avgHaltMin: +(trades.reduce((s, t) => s + (t.haltedauerMin || 0), 0) / trades.length).toFixed(0) };
   };

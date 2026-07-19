@@ -113,6 +113,9 @@ module.exports = {
   INDI_TREND_FILTER: b(process.env.INDI_TREND_FILTER, false), // EMA/VWAP/ADX als Richtungs-Gate über den Oszillatoren
   INDI_TREND_STRICT: b(process.env.INDI_TREND_STRICT, false), // true: EMA muss aktiv PRO Richtung sein; false: darf nur nicht dagegen sein
   INDI_ADX_MAX:      n(process.env.INDI_ADX_MAX, 30),      // ab diesem ADX keine Gegen-Trend-Trades mehr
+  INDI_FEES:         b(process.env.INDI_FEES, true),       // Gebühren realistisch in die Bilanz einrechnen
+  INDI_FEE_PCT:      n(process.env.INDI_FEE_PCT, 0.1),     // Handelsgebühr je Seite in % (Binance/Bybit Spot ~0.1)
+  INDI_FUNDING_PCT:  n(process.env.INDI_FUNDING_PCT, 0.01),// Funding je 8h für Shorts in %
 
   // ── Ruhemodus ──
   NOTIFY_PAPER:      b(process.env.NOTIFY_PAPER, false),
