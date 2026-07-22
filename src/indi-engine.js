@@ -64,6 +64,8 @@ const state = load(FILE, { balance: cfg.INDI_START_USD, positions: {} });
 // Startkapital EINMALIG festhalten – Basis für die Gesamtrendite. Bleibt stabil,
 // auch wenn INDI_START_USD später geändert wird.
 if (state.startkapital == null) { state.startkapital = state.balance + Object.values(state.positions || {}).reduce((s, p) => s + (p.usd || 0), 0); }
+// Startzeitpunkt einmalig festhalten -> Laufzeit-Anzeige im Heartbeat.
+if (state.startTs == null) state.startTs = Date.now();
 function persist() { save(FILE, state); }
 function logTrade(t) { const arr = load(TRADES, []); arr.push({ ts: new Date().toISOString(), ...t }); save(TRADES, arr); }
 
@@ -300,18 +302,30 @@ async function scan() {
   } finally { scanBusy = false; }
 }
 
-// ── Exit-Überwachung: jede Minute TP / SL / Trailing auf aktuellen Preisen ──
+// Live-Preise ALLER Symbole in EINEM Call (quellenabhängig). Wichtig für Exits:
+// vorher wurde der Schlusskurs der letzten abgeschlossenen 15m-Kerze benutzt –
+// dadurch reagierten TP/SL/Trailing bis zu 15 Minuten zu spät und schossen weit
+// über ihre Schwellen hinaus (Stop-Loss löste real bei -6% statt -3% aus).
+async function livePrices() {
+  if (QUELLE === "bybit") {
+    const j = await fetchJson(`${BASE}/v5/market/tickers?category=spot`);
+    return Object.fromEntries((j.result?.list || []).map(t => [t.symbol, +t.lastPrice]));
+  }
+  if (QUELLE === "okx") {
+    const j = await fetchJson(`${BASE}/api/v5/market/tickers?instType=SPOT`);
+    return Object.fromEntries((j.data || []).map(t => [t.instId.replace("-", ""), +t.last]));
+  }
+  const arr = await fetchJson(`${BASE}/api/v3/ticker/price`);
+  return Object.fromEntries(arr.map(t => [t.symbol, +t.price]));
+}
+
+// ── Exit-Überwachung: jede Minute TP / SL / Trailing auf LIVE-Preisen ──
 async function exitTick() {
   const syms = Object.keys(state.positions);
   if (!syms.length) return;
-  // Aktuellen Preis je offener Position holen (letzte abgeschlossene Kerze).
-  // Quellenunabhängig – nutzt denselben fetchCandles-Pfad wie der Scan.
-  const priceMap = {};
-  for (const sym of syms) {
-    try { const c = await fetchCandles(sym); if (c.length) priceMap[sym] = c[c.length - 1].c; }
-    catch (e) { console.error(`[INDI] exit-preis ${sym}:`, e.message); }
-    await new Promise(r => setTimeout(r, 120));
-  }
+  let priceMap;
+  try { priceMap = await livePrices(); }
+  catch (e) { console.error("[INDI] Live-Preise:", e.message); return; }
   for (const sym of syms) {
     const pos = state.positions[sym];
     const price = priceMap[sym];
@@ -344,11 +358,12 @@ async function statusLive() {
   const syms = Object.keys(state.positions);
   const zeilen = [];
   let offenerPnl = 0;
+  let priceMap = {};
+  try { priceMap = await livePrices(); } catch {}
   for (const sym of syms) {
     const pos = state.positions[sym];
     const hebel = pos.hebel || 1;
-    let price = pos.entry;
-    try { const c = await fetchCandles(sym); if (c.length) price = c[c.length - 1].c; } catch {}
+    const price = priceMap[sym] || pos.entry;
     const movePct = (pos.side === "short")
       ? ((pos.entry - price) / pos.entry) * 100
       : ((price - pos.entry) / pos.entry) * 100;
@@ -358,8 +373,8 @@ async function statusLive() {
     const pfeil = pnlPct >= 0 ? "🟢" : "🔴";
     const dir = pos.side === "short" ? "S" : "L";
     const hb = hebel > 1 ? ` ${hebel}x` : "";
-    zeilen.push(`${pfeil} ${sym.replace("USDT", "")} [${dir}${hb}]: ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}% (${pnlUsd >= 0 ? "+" : ""}${pnlUsd.toFixed(2)}$) · Peak +${pos.peakPnl}%`);
-    await new Promise(r => setTimeout(r, 120));
+    const st = pos.strategie === "momentum" ? "⚡" : "";
+    zeilen.push(`${pfeil} ${sym.replace("USDT", "")} [${dir}${hb}]${st}: ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}% (${pnlUsd >= 0 ? "+" : ""}${pnlUsd.toFixed(2)}$) · Peak +${pos.peakPnl}%`);
   }
   return { balance: state.balance, offen: zeilen, gesamt: state.balance + offeneSumme() + offenerPnl, offenerPnl };
 }
@@ -394,7 +409,11 @@ function heartbeatText() {
     ? lastScan.kandidaten.map(k => `${k.sym} [${k.dir}] ${k.n}/${k.dir === "S" ? 6 : 7} (${k.sig.join(",")})`).join("\n")
     : "keiner mit aktivem Signal";
   const fehlerZeile = lastScan.fehler ? `\n⚠️ ${lastScan.fehler} Fehler` + (lastScan.letzterFehler ? ` – ${String(lastScan.letzterFehler).slice(0, 120)}` : "") : "";
-  return `💓 <b>Indi-Heartbeat</b> (Quelle: ${QUELLE})\nLetzter Scan: vor ${minAgo} Min · ${lastScan.geprueft} Coins geprüft${fehlerZeile}\n` +
+  const laufMin = state.startTs ? (Date.now() - state.startTs) / 60e3 : 0;
+  const laufText = laufMin < 60 ? `${Math.round(laufMin)} Min`
+    : laufMin < 1440 ? `${(laufMin / 60).toFixed(1)} Std`
+    : `${Math.floor(laufMin / 1440)}d ${Math.round((laufMin % 1440) / 60)}h`;
+  return `💓 <b>Indi-Heartbeat</b> (Quelle: ${QUELLE})\nLäuft seit: ${laufText}\nLetzter Scan: vor ${minAgo} Min · ${lastScan.geprueft} Coins geprüft${fehlerZeile}\n` +
     `Offene Positionen: ${Object.keys(state.positions).length} · frei ${state.balance.toFixed(2)}$\n` +
     `Nächste Kandidaten (Schwelle ${cfg.INDI_MIN_VOTES}/7):\n${kand}`;
 }
