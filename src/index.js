@@ -320,6 +320,26 @@ async function pollCommands() {
       else if (text === "/heartbeat" || text === "/hb") {
         notify(indi.heartbeatText()).catch(()=>{});
       }
+      else if (text === "/reset" || text === "/reset ja") {
+        if (text === "/reset") {
+          const b = indi.bilanz();
+          global.__indiResetTs = Date.now();
+          notify(`♻️ <b>Indikator-Bot zurücksetzen?</b>\n\n` +
+            (b.n ? `Aktuell: ${b.n} Trades, Netto ${b.gesamt.pnlUsd >= 0 ? "+" : ""}${b.gesamt.pnlUsd}$\n` : "Aktuell: keine Trades\n") +
+            `Offene Positionen werden verworfen.\nAlte Trades werden ARCHIVIERT (nicht gelöscht).\n\n` +
+            `Neustart mit ${cfg.INDI_START_USD}$ virtuellem Guthaben.\nBestätigen mit: /reset ja (gilt 2 Min.)`).catch(()=>{});
+        } else {
+          if (!global.__indiResetTs || Date.now() - global.__indiResetTs > 120e3) {
+            notify("⚠️ Keine gültige Anfrage. Erst /reset senden (gilt 2 Min.).").catch(()=>{});
+          } else {
+            global.__indiResetTs = null;
+            const r = indi.reset();
+            notify(`♻️ <b>Zurückgesetzt</b>\n` +
+              (r.archiviert ? `${r.archiviert} alte Trades archiviert.\n` : "") +
+              `Neues Guthaben: ${r.neuStart.toFixed(2)}$\nLaufzeit-Zähler und Rendite starten bei 0.`).catch(()=>{});
+          }
+        }
+      }
       else if (text === "/rendite" || text === "/gesamt") {
         notify("📊 Berechne Gesamtrendite...").catch(()=>{});
         const r = await indi.gesamtrendite();

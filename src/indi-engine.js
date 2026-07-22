@@ -460,4 +460,25 @@ function start() {
   console.log(`[INDI] Engine aktiv (Quelle ${QUELLE}): Top-${cfg.INDI_TOP_N} Symbole, 15m, ${cfg.INDI_MIN_VOTES}er-Konfluenz, Shorts=${cfg.INDI_SHORTS ? "AN" : "aus"}, Momentum=${cfg.INDI_MOMENTUM ? "AN" : "aus"}, Hebel ${cfg.INDI_LEVERAGE}x, Größe ${cfg.INDI_POS_PCT > 0 ? cfg.INDI_POS_PCT + "%" : cfg.INDI_POS_USD + "$"}, virtuell ${cfg.INDI_START_USD}$`);
 }
 
-module.exports = { start, scan, exitTick, votes, status, statusLive, gesamtrendite, heartbeatText, bilanz, state };
+// Setzt Portfolio und Trade-Historie zurück. Alte Trades werden ARCHIVIERT
+// (eigene Datei mit Zeitstempel), nicht gelöscht – die Vergangenheit bleibt
+// nachvollziehbar, falls man später vergleichen will.
+function reset() {
+  const alt = load(TRADES, []);
+  const alteBilanz = alt.length ? bilanz() : null;
+  let archivDatei = null;
+  if (alt.length) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    archivDatei = path.join(path.dirname(TRADES), `indi-trades-archiv-${stamp}.json`);
+    save(archivDatei, alt);
+  }
+  state.balance = cfg.INDI_START_USD;
+  state.positions = {};
+  state.startkapital = cfg.INDI_START_USD;
+  state.startTs = Date.now();
+  persist();
+  save(TRADES, []);
+  return { archiviert: alt.length, archivDatei, alteBilanz, neuStart: cfg.INDI_START_USD };
+}
+
+module.exports = { start, scan, exitTick, votes, status, statusLive, gesamtrendite, heartbeatText, bilanz, reset, state };
