@@ -292,4 +292,21 @@ function momentumBreakout(candles, opts = {}) {
   return { dir, bodyPct: +bodyPct.toFixed(2), volRatio: +(k.v / avgVol).toFixed(1) };
 }
 
-module.exports = { sma, ema, rsi, mfi, stochRsi, macd, ttmSqueeze, premierStoch, rsiDivergence, fibGoldenPocket, emaTrend, adx, vwapSide, momentumBreakout };
+// Average True Range (Wilder): typische Schwankungsbreite je Kerze, in Preiseinheiten.
+// Basis für volatilitätsbasierte Stops – ein Stop von 2×ATR bedeutet "zwei normale
+// Kerzenbewegungen Luft", statt eines starren Prozentsatzes.
+function atr(candles, len = 14) {
+  const n = candles.length;
+  if (n < len + 1) return null;
+  const tr = [];
+  for (let i = 1; i < n; i++) {
+    tr.push(Math.max(candles[i].h - candles[i].l,
+                     Math.abs(candles[i].h - candles[i - 1].c),
+                     Math.abs(candles[i].l - candles[i - 1].c)));
+  }
+  let v = tr.slice(0, len).reduce((a, b) => a + b, 0) / len;
+  for (let i = len; i < tr.length; i++) v = (v * (len - 1) + tr[i]) / len;
+  return v;
+}
+
+module.exports = { sma, ema, rsi, mfi, stochRsi, macd, ttmSqueeze, premierStoch, rsiDivergence, fibGoldenPocket, emaTrend, adx, atr, vwapSide, momentumBreakout };

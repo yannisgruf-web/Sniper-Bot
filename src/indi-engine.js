@@ -172,7 +172,7 @@ function trendGate(candles, side) {
 }
 
 // ── Positionsverwaltung (long ODER short, mit optionalem Hebel) ──
-function openPos(sym, price, v, side, strategie = "oszillator") {
+function openPos(sym, price, v, side, strategie = "oszillator", candles = null) {
   // Positionsgröße: entweder fester $-Betrag ODER prozentual vom GESAMTKAPITAL
   // (frei + in offenen Positionen gebundene Margin). Prozentual erzeugt den
   // Zinseszins-Effekt: wächst das Konto, wachsen die Positionen mit.
@@ -189,7 +189,25 @@ function openPos(sym, price, v, side, strategie = "oszillator") {
     ? price * (1 + liqDistPct / 100)
     : price * (1 - liqDistPct / 100);
   const sig = side === "short" ? v.bear : v.bull;
+  // ── Volatilitätsbasierte Stops (ATR): absolute Preisniveaus statt starrer Prozente.
+  // Grund: Ein fester -1.5%-Kursstop wird bei einem 2.5%-Ausbruch von jedem normalen
+  // Rücksetzer getroffen. 2×ATR gibt der Bewegung so viel Luft, wie der Coin
+  // typischerweise atmet.
+  let atrAbs = null, slPrice = null, tpPrice = null;
+  const atrAktiv = cfg.INDI_ATR_STOP && candles &&
+    (cfg.INDI_ATR_SCOPE === "all" || strategie === cfg.INDI_ATR_SCOPE);
+  if (atrAktiv) {
+    const a = ind.atr(candles);
+    if (a > 0) {
+      atrAbs = a;
+      const slDist = a * cfg.INDI_ATR_MULT;
+      const tpDist = a * cfg.INDI_ATR_TP_MULT;
+      slPrice = side === "short" ? price + slDist : price - slDist;
+      tpPrice = side === "short" ? price - tpDist : price + tpDist;
+    }
+  }
   state.positions[sym] = { side, strategie, entry: price, usd, hebel, posWert, liqPrice,
+                           atrAbs, slPrice, tpPrice, peakPrice: price,
                            qty: posWert / price, openedAt: Date.now(), peakPnl: 0, votes: sig };
   persist();
   const pfeil = side === "short" ? "🔴📉" : "🟢";
@@ -197,7 +215,8 @@ function openPos(sym, price, v, side, strategie = "oszillator") {
   const stratTag = strategie === "momentum" ? " ⚡MOM" : "";
   const hebelInfo = hebel > 1 ? ` · ${hebel}x (Position ${posWert.toFixed(0)}$)` : "";
   const groessenInfo = cfg.INDI_POS_PCT > 0 ? ` (${cfg.INDI_POS_PCT}% v. ${gesamtKapital.toFixed(0)}$)` : "";
-  notify(`${pfeil} <b>INDI ${wort} ${sym.replace("USDT", "")}${stratTag}</b> (Paper)\n${usd.toFixed(2)}$${groessenInfo}${hebelInfo} @ ${price}\nSignale: ${sig.join(", ")}\nRest-Guthaben: ${state.balance.toFixed(2)}$`).catch(() => {});
+  const atrInfo = atrAbs ? `\nATR-Stop: ${slPrice.toPrecision(4)} · Ziel: ${tpPrice.toPrecision(4)} (ATR ${((atrAbs / price) * 100).toFixed(2)}%)` : "";
+  notify(`${pfeil} <b>INDI ${wort} ${sym.replace("USDT", "")}${stratTag}</b> (Paper)\n${usd.toFixed(2)}$${groessenInfo}${hebelInfo} @ ${price}\nSignale: ${sig.join(", ")}${atrInfo}\nRest-Guthaben: ${state.balance.toFixed(2)}$`).catch(() => {});
 }
 
 function closePos(sym, price, grund) {
@@ -268,19 +287,19 @@ async function scan() {
             // MOMENTUM-STRATEGIE: starke Kerze + Volumen-Spike, in Trendrichtung.
             const bo = ind.momentumBreakout(candles, { bodyMinPct: cfg.INDI_MOM_BODY_PCT, volMult: cfg.INDI_MOM_VOL_MULT });
             if (bo.dir === 1 && slotsFrei)
-              openPos(sym, price, { bull: [`Ausbruch +${bo.bodyPct}%`, `Vol ${bo.volRatio}x`], bear: [] }, "long", "momentum");
+              openPos(sym, price, { bull: [`Ausbruch +${bo.bodyPct}%`, `Vol ${bo.volRatio}x`], bear: [] }, "long", "momentum", candles);
             else if (bo.dir === -1 && cfg.INDI_SHORTS && slotsFrei)
-              openPos(sym, price, { bull: [], bear: [`Abbruch ${bo.bodyPct}%`, `Vol ${bo.volRatio}x`] }, "short", "momentum");
+              openPos(sym, price, { bull: [], bear: [`Abbruch ${bo.bodyPct}%`, `Vol ${bo.volRatio}x`] }, "short", "momentum", candles);
           } else {
             // OSZILLATOR-STRATEGIE (Mean Reversion) mit Trend-Gate, wie bisher.
             if (v.bull.length >= cfg.INDI_MIN_VOTES && slotsFrei) {
               const gate = trendGate(candles, "long");
-              if (gate.ok) openPos(sym, price, v, "long", "oszillator");
+              if (gate.ok) openPos(sym, price, v, "long", "oszillator", candles);
               else console.log(`[INDI] Long ${sym} blockiert: ${gate.grund}`);
             }
             else if (cfg.INDI_SHORTS && v.bear.length >= cfg.INDI_MIN_VOTES && slotsFrei) {
               const gate = trendGate(candles, "short");
-              if (gate.ok) openPos(sym, price, v, "short", "oszillator");
+              if (gate.ok) openPos(sym, price, v, "short", "oszillator", candles);
               else console.log(`[INDI] Short ${sym} blockiert: ${gate.grund}`);
             }
           }
@@ -343,6 +362,35 @@ async function exitTick() {
       : ((price - pos.entry) / pos.entry) * 100;
     const pnl = movePct * hebel;                    // Rendite bezogen auf Einsatz
     if (pnl > pos.peakPnl) { pos.peakPnl = +pnl.toFixed(2); persist(); }
+
+    // ── ATR-Variante: absolute Preisniveaus statt fester Prozente ──
+    if (pos.slPrice && pos.atrAbs) {
+      const istLong = (pos.side || "long") === "long";
+      const trailDist = pos.atrAbs * cfg.INDI_ATR_TRAIL_MULT;
+      if (istLong) {
+        // Hochwasserstand: Stop zieht nach, sinkt aber nie wieder.
+        if (price > (pos.peakPrice || pos.entry)) {
+          pos.peakPrice = price;
+          const neu = price - trailDist;
+          if (neu > pos.slPrice) { pos.slPrice = neu; }
+          persist();
+        }
+        if (price <= pos.slPrice) { closePos(sym, price, `ATR-Stop (${pnl.toFixed(1)}%)`); continue; }
+        if (pos.tpPrice && price >= pos.tpPrice) { closePos(sym, price, `ATR-Ziel (+${pnl.toFixed(1)}%)`); continue; }
+      } else {
+        if (price < (pos.peakPrice || pos.entry)) {
+          pos.peakPrice = price;
+          const neu = price + trailDist;
+          if (neu < pos.slPrice) { pos.slPrice = neu; }
+          persist();
+        }
+        if (price >= pos.slPrice) { closePos(sym, price, `ATR-Stop (${pnl.toFixed(1)}%)`); continue; }
+        if (pos.tpPrice && price <= pos.tpPrice) { closePos(sym, price, `ATR-Ziel (+${pnl.toFixed(1)}%)`); continue; }
+      }
+      continue;   // Prozent-Logik überspringen, ATR hat die Hoheit
+    }
+
+    // ── Klassische Prozent-Logik (unverändert) ──
     if (pnl >= cfg.INDI_TP_PCT) { closePos(sym, price, `take-profit (+${pnl.toFixed(1)}%)`); continue; }
     if (pnl <= cfg.INDI_SL_PCT) { closePos(sym, price, `stop-loss (${pnl.toFixed(1)}%)`); continue; }
     if (pos.peakPnl >= cfg.INDI_TRAIL_ARM) {
@@ -457,7 +505,7 @@ function start() {
     }
   }, 30e3);
   setInterval(() => { exitTick().catch(() => {}); }, 60e3);
-  console.log(`[INDI] Engine aktiv (Quelle ${QUELLE}): Top-${cfg.INDI_TOP_N} Symbole, 15m, ${cfg.INDI_MIN_VOTES}er-Konfluenz, Shorts=${cfg.INDI_SHORTS ? "AN" : "aus"}, Momentum=${cfg.INDI_MOMENTUM ? "AN" : "aus"}, Hebel ${cfg.INDI_LEVERAGE}x, Größe ${cfg.INDI_POS_PCT > 0 ? cfg.INDI_POS_PCT + "%" : cfg.INDI_POS_USD + "$"}, virtuell ${cfg.INDI_START_USD}$`);
+  console.log(`[INDI] Engine aktiv (Quelle ${QUELLE}): Top-${cfg.INDI_TOP_N} Symbole, 15m, ${cfg.INDI_MIN_VOTES}er-Konfluenz, Shorts=${cfg.INDI_SHORTS ? "AN" : "aus"}, Momentum=${cfg.INDI_MOMENTUM ? "AN" : "aus"}, ATR-Stop=${cfg.INDI_ATR_STOP ? cfg.INDI_ATR_SCOPE : "aus"}, Hebel ${cfg.INDI_LEVERAGE}x, Größe ${cfg.INDI_POS_PCT > 0 ? cfg.INDI_POS_PCT + "%" : cfg.INDI_POS_USD + "$"}, virtuell ${cfg.INDI_START_USD}$`);
 }
 
 // Setzt Portfolio und Trade-Historie zurück. Alte Trades werden ARCHIVIERT

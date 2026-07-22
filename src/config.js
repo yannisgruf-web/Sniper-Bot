@@ -119,6 +119,12 @@ module.exports = {
   INDI_MOMENTUM_ADX: n(process.env.INDI_MOMENTUM_ADX, 30), // ab diesem ADX gilt "Trendphase" -> Momentum
   INDI_MOM_BODY_PCT: n(process.env.INDI_MOM_BODY_PCT, 2),  // Mindest-Kerzensprung in % für Ausbruch
   INDI_MOM_VOL_MULT: n(process.env.INDI_MOM_VOL_MULT, 2),  // Volumen muss X-fachen des Schnitts erreichen
+  // ── Volatilitätsbasierte Stops (ATR) statt fester Prozente ──
+  INDI_ATR_STOP:     b(process.env.INDI_ATR_STOP, false),  // ATR-Stops aktivieren
+  INDI_ATR_SCOPE:    process.env.INDI_ATR_SCOPE || "momentum", // "momentum" | "oszillator" | "all"
+  INDI_ATR_MULT:     n(process.env.INDI_ATR_MULT, 2),      // Anfangs-Stop = X × ATR unter/über Einstieg
+  INDI_ATR_TP_MULT:  n(process.env.INDI_ATR_TP_MULT, 3),   // Ziel = X × ATR (3 vs 2 = Chance/Risiko 1.5)
+  INDI_ATR_TRAIL_MULT: n(process.env.INDI_ATR_TRAIL_MULT, 2), // Trailing-Abstand in ATR
   INDI_FEES:         b(process.env.INDI_FEES, true),       // Gebühren realistisch in die Bilanz einrechnen
   INDI_FEE_PCT:      n(process.env.INDI_FEE_PCT, 0.1),     // Handelsgebühr je Seite in % (Binance/Bybit Spot ~0.1)
   INDI_FUNDING_PCT:  n(process.env.INDI_FUNDING_PCT, 0.01),// Funding je 8h für Shorts in %
